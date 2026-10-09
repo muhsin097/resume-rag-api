@@ -1,0 +1,15 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: resumerag
+      POSTGRES_PASSWORD: resumerag
+      POSTGRES_DB: resumerag
+    ports:
+      - '5433:5432'
+    volumes:
+      - resumerag_pgdata:/var/lib/postgresql/data
+
+volumes:
+  resumerag_pgdata:

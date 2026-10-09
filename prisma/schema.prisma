@@ -1,0 +1,98 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider        = "prisma-client"
+  output          = "../src/generated/prisma"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  extensions = [vector]
+}
+
+enum Plan {
+  FREE
+  PREMIUM
+}
+
+enum ExperienceType {
+  EXPERIENCE
+  EDUCATION
+  CERTIFICATION
+  PROJECT
+  ACHIEVEMENT
+  SKILL
+}
+
+model User {
+  id                  String             @id @default(uuid())
+  email               String             @unique
+  passwordHash        String             @map("password_hash")
+  name                String
+  phone               String?
+  location            String?
+  bio                 String?            @db.Text
+  jobSearchEnabled    Boolean            @default(false) @map("job_search_enabled")
+  plan                Plan               @default(FREE)
+  freeGenerationsUsed Int                @default(0) @map("free_generations_used")
+  createdAt           DateTime           @default(now()) @map("created_at")
+  experienceItems     ExperienceItem[]
+  resumeGenerations   ResumeGeneration[]
+
+  @@map("users")
+}
+
+// One row per resume "fact": a job, a degree, a cert, a project, an achievement, or a skill.
+// This is the corpus RAG retrieves from -- the atomic unit a tailored resume gets assembled out of.
+model ExperienceItem {
+  id           String          @id @default(uuid())
+  userId       String          @map("user_id")
+  user         User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type         ExperienceType
+  title        String
+  organization String?
+  description String?          @db.Text
+  startDate    DateTime?        @map("start_date")
+  endDate      DateTime?        @map("end_date")
+  // Normalized text actually sent to the embedding model -- derived from the fields above.
+  content      String           @db.Text
+  createdAt    DateTime         @default(now()) @map("created_at")
+  updatedAt    DateTime         @updatedAt @map("updated_at")
+  embedding    ExperienceEmbedding?
+
+  @@map("experience_items")
+  @@index([userId])
+}
+
+// Kept separate from ExperienceItem so the embedding model can change later
+// (re-embed into a new column/table) without touching the source data.
+model ExperienceEmbedding {
+  id               String         @id @default(uuid())
+  experienceItemId String         @unique @map("experience_item_id")
+  experienceItem   ExperienceItem @relation(fields: [experienceItemId], references: [id], onDelete: Cascade)
+  // 512 dims == Voyage `voyage-3-lite`. Prisma has no query-builder support for
+  // pgvector ops, so similarity search against this column is raw SQL ($queryRaw).
+  embedding        Unsupported("vector(512)")
+  model            String
+  createdAt        DateTime       @default(now()) @map("created_at")
+
+  @@map("experience_embeddings")
+}
+
+model ResumeGeneration {
+  id               String   @id @default(uuid())
+  userId           String   @map("user_id")
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jobDescription   String   @db.Text @map("job_description")
+  retrievedItemIds Json     @map("retrieved_item_ids")
+  generatedContent String   @db.Text @map("generated_content")
+  matchScore       Int      @default(0) @map("match_score")
+  matchedKeywords  String[] @default([]) @map("matched_keywords")
+  missingKeywords  String[] @default([]) @map("missing_keywords")
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  @@map("resume_generations")
+  @@index([userId])
+}
