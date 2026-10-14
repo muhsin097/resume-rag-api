@@ -1,0 +1,45 @@
+# Lives at resume-rag-api/deploy/docker-compose.yml. Assumes resume-rag-web
+# is cloned as a sibling of resume-rag-api (same parent directory). Only
+# `web` is exposed publicly -- `api` is reached over the compose network
+# at http://api:3000, so it never needs a public port.
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: resumerag
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: resumerag
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  api:
+    build: ..
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://resumerag:${DB_PASSWORD}@postgres:5432/resumerag?schema=public
+      PORT: "3000"
+      JWT_SECRET: ${JWT_SECRET}
+      WEB_ORIGIN: http://${PUBLIC_IP}:3001
+      VOYAGE_API_KEY: ${VOYAGE_API_KEY}
+      VOYAGE_EMBEDDING_MODEL: voyage-3-lite
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      ANTHROPIC_MODEL: claude-haiku-4-5-20251001
+      FREE_GENERATIONS_LIMIT: "5"
+    depends_on:
+      - postgres
+
+  web:
+    build: ../../resume-rag-web
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    environment:
+      RESUME_API_BASE_URL: http://api:3000
+      AUTH_SECRET: ${AUTH_SECRET}
+      AUTH_URL: http://${PUBLIC_IP}:3001
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
