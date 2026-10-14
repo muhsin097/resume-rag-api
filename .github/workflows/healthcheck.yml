@@ -1,0 +1,15 @@
+name: Health check
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Hit /health through the web app's port
+        run: |
+          curl -fsS --max-time 10 "http://${{ secrets.EC2_HOST }}:3001/login" > /dev/null
+          echo "App is responding"
