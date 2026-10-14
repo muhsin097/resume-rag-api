@@ -2,8 +2,12 @@
 
 How this app actually got deployed -- a single EC2 instance running
 Docker Compose (api + web + Postgres/pgvector), launched and configured
-by hand via the AWS Console. No Terraform, no CI/CD -- just the steps,
-kept here so they're repeatable.
+by hand via the AWS Console.
+
+**`~/resume-rag-api/deploy/` is the one canonical deploy location on the
+instance** -- `.env` and `docker-compose.yml` both live here. (Earlier
+this ran from a separate standalone `~/deploy/` folder; consolidated to
+this one so CI/CD and manual commands target the same place.)
 
 ## 1. Launch the instance (AWS Console)
 
@@ -14,8 +18,11 @@ kept here so they're repeatable.
 - **Storage: 20 GiB** (the AMI default of 8GB is not enough to build two
   Node apps -- ran out of disk mid-build at 8GB)
 - Key pair: create new, download the `.pem`
-- Security group: allow SSH (22) from your IP, and a rule for TCP 3001
-  from anywhere (the web app's port)
+- Security group:
+  - SSH (22) from anywhere -- needed so GitHub Actions can reach it too;
+    key-based auth only (password auth is disabled), so this is the
+    actual security boundary
+  - TCP 3001 from anywhere (the web app's port)
 
 ## 2. SSH in and install Docker
 
@@ -88,7 +95,35 @@ curl -s http://localhost:3001/login                                  # should re
 
 Then visit `http://<public-ip>:3001` in a browser.
 
-## Redeploying after code changes
+## CI/CD
+
+`.github/workflows/deploy.yml` in both `resume-rag-api` and
+`resume-rag-web` SSHes into the instance on every push to `main` (or
+manual `workflow_dispatch`) and rebuilds/restarts just that one
+service. Needs three repo secrets in both repos: `EC2_HOST`,
+`EC2_USER` (`ubuntu`), `EC2_SSH_KEY` (the instance's private key).
+
+No AWS API calls involved -- just a direct SSH connection -- so this
+isn't affected by account-level AWS permission restrictions.
+
+`.github/workflows/healthcheck.yml` pings `/login` every 15 minutes as
+a free app-level uptime check (GitHub emails on failure).
+
+## Monitoring
+
+CloudWatch agent is installed on the instance, publishing to the
+`ResumeRag` namespace: `mem_used_percent`, `swap_used_percent`,
+`cpu_usage_idle` (dimension `cpu=cpu-total`), `disk_used_percent`
+(dimensions `path=/`, `device=nvme0n1p1`, `fstype=ext4`). Three alarms
+(`resume-rag-high-memory`, `resume-rag-high-disk`, `resume-rag-high-swap`,
+all >80-85%) notify an SNS topic (`resume-rag-alerts`) with an email
+subscription -- directly covers the two failure modes already hit
+during setup (OOM, disk full).
+
+Requires an IAM instance profile (`resume-rag-app-instance`, policy
+`CloudWatchAgentServerPolicy`) attached to the instance.
+
+## Redeploying after code changes (manual, if not using CI/CD)
 
 ```bash
 cd ~/resume-rag-api && git pull   # or ~/resume-rag-web
@@ -100,3 +135,5 @@ docker compose up -d
 ## Teardown
 
 EC2 Console -> select the instance -> Instance state -> Terminate.
+(Also delete the `resume-rag-app-instance` IAM role/instance profile
+and the `resume-rag-alerts` SNS topic if you want a full clean slate.)
