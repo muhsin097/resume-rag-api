@@ -16,6 +16,13 @@ services:
   api:
     build: ..
     restart: unless-stopped
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: ap-southeast-2
+        awslogs-group: /resume-rag/api
+        awslogs-create-group: "true"
+        awslogs-stream: api
     environment:
       DATABASE_URL: postgresql://resumerag:${DB_PASSWORD}@postgres:5432/resumerag?schema=public
       PORT: "3000"
@@ -34,6 +41,13 @@ services:
     restart: unless-stopped
     ports:
       - "3001:3001"
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: ap-southeast-2
+        awslogs-group: /resume-rag/web
+        awslogs-create-group: "true"
+        awslogs-stream: web
     environment:
       RESUME_API_BASE_URL: http://api:3000
       AUTH_SECRET: ${AUTH_SECRET}
