@@ -9,6 +9,14 @@ export interface SimilarExperienceItem {
   distance: number;
 }
 
+export interface SimilarCandidate {
+  userId: string;
+  itemId: string;
+  title: string;
+  organization: string | null;
+  distance: number;
+}
+
 // Prisma's query builder has no concept of pgvector's operators, so every
 // read/write of the `embedding` column goes through raw SQL here -- this is
 // the one place in the app that talks to pgvector directly.
@@ -70,6 +78,40 @@ export class VectorService {
       JOIN "experience_items" i ON i."id" = e."experience_item_id"
       WHERE i."user_id" = ${userId}
       ORDER BY distance ASC
+      LIMIT ${limit}
+    `;
+  }
+
+  // Same cosine-distance retrieval as above, but aggregated across *all*
+  // opted-in candidates instead of scoped to one user -- this is the
+  // recruiter-side half of the same RAG infrastructure. DISTINCT ON picks
+  // each candidate's single closest-matching item in one pass (both the
+  // ranking signal AND a snippet to show), so the whole search costs
+  // exactly one Voyage embed call no matter how many candidates match --
+  // looking up each candidate's best item separately would re-embed the
+  // query once per result and blow through the free-tier rate limit.
+  async findSimilarCandidates(
+    queryText: string,
+    limit = 10,
+  ): Promise<SimilarCandidate[]> {
+    const embedding = await this.voyageClient.embed(queryText);
+    const vectorLiteral = toVectorLiteral(embedding);
+
+    return this.prisma.$queryRaw<SimilarCandidate[]>`
+      SELECT "userId", "itemId", "title", "organization", "distance" FROM (
+        SELECT DISTINCT ON (i."user_id")
+          i."user_id" AS "userId",
+          i."id" AS "itemId",
+          i."title" AS "title",
+          i."organization" AS "organization",
+          (e."embedding" <=> ${vectorLiteral}::vector) AS "distance"
+        FROM "experience_embeddings" e
+        JOIN "experience_items" i ON i."id" = e."experience_item_id"
+        JOIN "users" u ON u."id" = i."user_id"
+        WHERE u."job_search_enabled" = true
+        ORDER BY i."user_id", "distance" ASC
+      ) ranked
+      ORDER BY "distance" ASC
       LIMIT ${limit}
     `;
   }

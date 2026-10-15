@@ -66,6 +66,7 @@ export class AuthService {
       sub: user.id,
       email: user.email,
       isAdmin: user.isAdmin,
+      kind: 'candidate',
     });
 
     return {

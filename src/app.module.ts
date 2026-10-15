@@ -8,6 +8,8 @@ import { ResumeGenerationsModule } from './resume-generations/resume-generations
 import { HealthModule } from './health/health.module.js';
 import { ResumeImportModule } from './resume-import/resume-import.module.js';
 import { AdminModule } from './admin/admin.module.js';
+import { RecruiterAuthModule } from './recruiter-auth/recruiter-auth.module.js';
+import { RecruiterSearchModule } from './recruiter-search/recruiter-search.module.js';
 
 @Module({
   imports: [
@@ -20,6 +22,8 @@ import { AdminModule } from './admin/admin.module.js';
     HealthModule,
     ResumeImportModule,
     AdminModule,
+    RecruiterAuthModule,
+    RecruiterSearchModule,
   ],
 })
 export class AppModule {}

@@ -1,0 +1,89 @@
+import {
+  ConflictException,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
+import * as bcrypt from 'bcrypt';
+import { PrismaService } from '../prisma/prisma.service.js';
+import { RegisterRecruiterDto } from './dto/register-recruiter.dto.js';
+import { LoginRecruiterDto } from './dto/login-recruiter.dto.js';
+
+const PASSWORD_HASH_ROUNDS = 10;
+
+@Injectable()
+export class RecruiterAuthService {
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly jwtService: JwtService,
+  ) {}
+
+  async register(dto: RegisterRecruiterDto) {
+    // Emails are case-insensitive, same normalization as the candidate side.
+    const email = dto.email.toLowerCase();
+    const existing = await this.prisma.recruiter.findUnique({
+      where: { email },
+    });
+    if (existing) {
+      throw new ConflictException('An account with this email already exists');
+    }
+
+    const passwordHash = await bcrypt.hash(dto.password, PASSWORD_HASH_ROUNDS);
+    const recruiter = await this.prisma.recruiter.create({
+      data: {
+        email,
+        passwordHash,
+        name: dto.name,
+        companyName: dto.companyName,
+      },
+    });
+
+    return this.buildAuthResponse(recruiter);
+  }
+
+  async login(dto: LoginRecruiterDto) {
+    const recruiter = await this.prisma.recruiter.findUnique({
+      where: { email: dto.email.toLowerCase() },
+    });
+    if (!recruiter) {
+      throw new UnauthorizedException('Invalid email or password');
+    }
+
+    const passwordMatches = await bcrypt.compare(
+      dto.password,
+      recruiter.passwordHash,
+    );
+    if (!passwordMatches) {
+      throw new UnauthorizedException('Invalid email or password');
+    }
+
+    return this.buildAuthResponse(recruiter);
+  }
+
+  private buildAuthResponse(recruiter: {
+    id: string;
+    email: string;
+    name: string;
+    companyName: string;
+  }) {
+    // kind: 'recruiter' is what lets guards reject a candidate token here
+    // and vice versa -- the two strategies live under different Passport
+    // strategy names, but this claim is what resume-rag-web's NextAuth
+    // session uses to tell the two personas apart client-side.
+    const accessToken = this.jwtService.sign({
+      sub: recruiter.id,
+      email: recruiter.email,
+      kind: 'recruiter',
+    });
+
+    return {
+      accessToken,
+      recruiter: {
+        id: recruiter.id,
+        email: recruiter.email,
+        name: recruiter.name,
+        companyName: recruiter.companyName,
+      },
+    };
+  }
+}
