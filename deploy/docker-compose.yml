@@ -1,7 +1,8 @@
 # Lives at resume-rag-api/deploy/docker-compose.yml. Assumes resume-rag-web
-# is cloned as a sibling of resume-rag-api (same parent directory). Only
-# `web` is exposed publicly -- `api` is reached over the compose network
-# at http://api:3000, so it never needs a public port.
+# and resume-rag-admin are both cloned as siblings of resume-rag-api (same
+# parent directory). Only `web` and `admin` are exposed publicly -- `api`
+# is reached over the compose network at http://api:3000, so it never
+# needs a public port.
 services:
   postgres:
     image: pgvector/pgvector:pg16
@@ -52,6 +53,25 @@ services:
       RESUME_API_BASE_URL: http://api:3000
       AUTH_SECRET: ${AUTH_SECRET}
       AUTH_URL: http://${PUBLIC_IP}:3001
+    depends_on:
+      - api
+
+  admin:
+    build: ../../resume-rag-admin
+    restart: unless-stopped
+    ports:
+      - "3002:3002"
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: ap-southeast-2
+        awslogs-group: /resume-rag/admin
+        awslogs-create-group: "true"
+        awslogs-stream: admin
+    environment:
+      RESUME_API_BASE_URL: http://api:3000
+      AUTH_SECRET: ${ADMIN_AUTH_SECRET}
+      AUTH_URL: http://${PUBLIC_IP}:3002
     depends_on:
       - api
 

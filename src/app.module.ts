@@ -7,6 +7,7 @@ import { ExperienceItemsModule } from './experience-items/experience-items.modul
 import { ResumeGenerationsModule } from './resume-generations/resume-generations.module.js';
 import { HealthModule } from './health/health.module.js';
 import { ResumeImportModule } from './resume-import/resume-import.module.js';
+import { AdminModule } from './admin/admin.module.js';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { ResumeImportModule } from './resume-import/resume-import.module.js';
     ResumeGenerationsModule,
     HealthModule,
     ResumeImportModule,
+    AdminModule,
   ],
 })
 export class AppModule {}

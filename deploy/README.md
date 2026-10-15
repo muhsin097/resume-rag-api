@@ -1,8 +1,8 @@
 # Manual EC2 deploy
 
 How this app actually got deployed -- a single EC2 instance running
-Docker Compose (api + web + Postgres/pgvector), launched and configured
-by hand via the AWS Console.
+Docker Compose (api + web + admin + Postgres/pgvector), launched and
+configured by hand via the AWS Console.
 
 **`~/resume-rag-api/deploy/` is the one canonical deploy location on the
 instance** -- `.env` and `docker-compose.yml` both live here. (Earlier
@@ -23,6 +23,9 @@ this one so CI/CD and manual commands target the same place.)
     key-based auth only (password auth is disabled), so this is the
     actual security boundary
   - TCP 3001 from anywhere (the web app's port)
+  - TCP 3002 from anywhere (the admin app's port) -- the admin app has
+    its own login gate (only accounts with `is_admin = true` can sign
+    in, see step 8), so this is deliberately not restricted by IP
 
 ## 2. SSH in and install Docker
 
@@ -53,6 +56,7 @@ sudo swapon /swapfile
 ```bash
 git clone https://github.com/muhsin097/resume-rag-api.git
 git clone https://github.com/muhsin097/resume-rag-web.git
+git clone https://github.com/muhsin097/resume-rag-admin.git
 ```
 
 (Private repos -- if prompted for a password, use a GitHub personal
@@ -66,7 +70,7 @@ cp .env.example .env
 ```
 
 Edit `.env` and fill in:
-- `DB_PASSWORD`, `JWT_SECRET`, `AUTH_SECRET`: `openssl rand -hex 32` (or similar) for each
+- `DB_PASSWORD`, `JWT_SECRET`, `AUTH_SECRET`, `ADMIN_AUTH_SECRET`: `openssl rand -hex 32` (or similar) for each -- `AUTH_SECRET` and `ADMIN_AUTH_SECRET` must be different (two separate NextAuth apps/cookies)
 - `VOYAGE_API_KEY`, `ANTHROPIC_API_KEY`: your real keys
 - `PUBLIC_IP`: **the instance's public IP, typed literally** -- don't
   rely on the EC2 metadata service for this; it requires an IMDSv2
@@ -81,6 +85,7 @@ Build one service at a time rather than `docker compose up --build`
 ```bash
 docker compose build api
 docker compose build web
+docker compose build admin
 docker compose up -d
 docker compose exec api npx prisma migrate deploy
 ```
@@ -88,19 +93,33 @@ docker compose exec api npx prisma migrate deploy
 ## 7. Verify
 
 ```bash
-docker compose ps                                                  # all 3 should show "Up"
+docker compose ps                                                  # all 4 should show "Up"
 docker compose exec api node -e "fetch('http://localhost:3000/health').then(r=>r.text()).then(console.log)"
 curl -s http://localhost:3001/login                                  # should return HTML
+curl -s http://localhost:3002/login                                  # should return HTML
 ```
 
-Then visit `http://<public-ip>:3001` in a browser.
+Then visit `http://<public-ip>:3001` (candidate app) or
+`http://<public-ip>:3002` (admin dashboard) in a browser.
+
+## 8. Grant admin access
+
+The admin app (`resume-rag-admin`) shares the same `users` table and
+`/auth/login` endpoint as the candidate app -- access is gated purely by
+an `is_admin` column, flipped by hand (never via a seed script or any
+user-facing endpoint):
+
+```bash
+docker compose exec postgres psql -U resumerag -d resumerag \
+  -c "UPDATE users SET is_admin = true WHERE email = 'you@example.com';"
+```
 
 ## CI/CD
 
-`.github/workflows/deploy.yml` in both `resume-rag-api` and
-`resume-rag-web` SSHes into the instance on every push to `main` (or
-manual `workflow_dispatch`) and rebuilds/restarts just that one
-service. Needs three repo secrets in both repos: `EC2_HOST`,
+`.github/workflows/deploy.yml` in `resume-rag-api`, `resume-rag-web`,
+and `resume-rag-admin` SSHes into the instance on every push to `main`
+(or manual `workflow_dispatch`) and rebuilds/restarts just that one
+service. Needs three repo secrets in each repo: `EC2_HOST`,
 `EC2_USER` (`ubuntu`), `EC2_SSH_KEY` (the instance's private key).
 
 No AWS API calls involved -- just a direct SSH connection -- so this
@@ -126,9 +145,9 @@ Requires an IAM instance profile (`resume-rag-app-instance`, policy
 ## Redeploying after code changes (manual, if not using CI/CD)
 
 ```bash
-cd ~/resume-rag-api && git pull   # or ~/resume-rag-web
+cd ~/resume-rag-api && git pull   # or ~/resume-rag-web, ~/resume-rag-admin
 cd ~/resume-rag-api/deploy
-docker compose build api    # or web
+docker compose build api    # or web / admin
 docker compose up -d
 ```
 

@@ -19,8 +19,11 @@ export class AuthService {
   ) {}
 
   async register(dto: RegisterDto) {
+    // Emails are case-insensitive -- normalize before every lookup/write so
+    // "Name@x.com" and "name@x.com" are always the same account.
+    const email = dto.email.toLowerCase();
     const existing = await this.prisma.user.findUnique({
-      where: { email: dto.email },
+      where: { email },
     });
     if (existing) {
       throw new ConflictException('An account with this email already exists');
@@ -28,7 +31,7 @@ export class AuthService {
 
     const passwordHash = await bcrypt.hash(dto.password, PASSWORD_HASH_ROUNDS);
     const user = await this.prisma.user.create({
-      data: { email: dto.email, passwordHash, name: dto.name },
+      data: { email, passwordHash, name: dto.name },
     });
 
     return this.buildAuthResponse(user);
@@ -36,7 +39,7 @@ export class AuthService {
 
   async login(dto: LoginDto) {
     const user = await this.prisma.user.findUnique({
-      where: { email: dto.email },
+      where: { email: dto.email.toLowerCase() },
     });
     if (!user) {
       throw new UnauthorizedException('Invalid email or password');
@@ -57,15 +60,22 @@ export class AuthService {
     id: string;
     email: string;
     name: string;
+    isAdmin: boolean;
   }) {
     const accessToken = this.jwtService.sign({
       sub: user.id,
       email: user.email,
+      isAdmin: user.isAdmin,
     });
 
     return {
       accessToken,
-      user: { id: user.id, email: user.email, name: user.name },
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        isAdmin: user.isAdmin,
+      },
     };
   }
 }

@@ -37,6 +37,9 @@ model User {
   jobSearchEnabled    Boolean            @default(false) @map("job_search_enabled")
   plan                Plan               @default(FREE)
   freeGenerationsUsed Int                @default(0) @map("free_generations_used")
+  // Gates access to the separate admin dashboard app -- not exposed via any
+  // user-facing update endpoint, only ever flipped by hand in the DB.
+  isAdmin             Boolean            @default(false) @map("is_admin")
   createdAt           DateTime           @default(now()) @map("created_at")
   experienceItems     ExperienceItem[]
   resumeGenerations   ResumeGeneration[]
