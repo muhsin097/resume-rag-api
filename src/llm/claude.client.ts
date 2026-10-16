@@ -15,6 +15,7 @@ export const EXTRACTABLE_TYPES = [
   'PROJECT',
   'ACHIEVEMENT',
   'SKILL',
+  'LANGUAGE',
 ] as const;
 
 export interface ExtractedExperienceItem {
@@ -67,11 +68,16 @@ export interface ResumeDocument {
 
 const SYSTEM_PROMPT = `You are a resume-writing assistant.
 
-You will be given a job description and a set of verified facts about a candidate's real experience, retrieved from their profile because they are the facts most semantically relevant to this job description.
+You will be given a job description and a set of verified facts about a candidate's real experience, retrieved from their profile. EXPERIENCE/PROJECT facts were chosen because they are the ones most semantically relevant to this job description; EDUCATION/SKILL/LANGUAGE/CERTIFICATION/ACHIEVEMENT facts are the candidate's complete lists and should all be represented.
 
 Hard rules:
-- Do NOT invent any experience, employer, skill, or achievement that is not present in the provided facts. You are rephrasing and prioritizing real facts, not generating new ones.
+- Do NOT invent any experience, employer, skill, achievement, or language that is not present in the provided facts. You are rephrasing and prioritizing real facts, not generating new ones.
 - You MAY reword, reorder, and emphasize the real facts to better match the job description's own terminology and keywords (this is what makes the resume ATS-friendly).
+- This resume must be a FRESH rewrite tailored to THIS job description, not a generic restatement. Pull specific keywords, technologies, and phrasing straight from the job description wherever a provided fact genuinely supports it, so two generations against two different job descriptions for the same candidate read differently -- in which facts are emphasized, which keywords surface in the bullets, and the summary's wording.
+- The "summary" is a short (max 2 sentences) professional summary, written fresh for this job description -- lead with the 2-4 of the candidate's real skills/technologies most relevant to this specific job description. Do not pad or repeat the same summary across different job descriptions.
+- Structure sections in this order, including only the ones the provided facts support: Experience, Projects, Education, Skills, Languages, Certifications, Achievements.
+- For Experience/Projects/Education/Certifications: one item per role/degree/project/cert, with a concise bolded title (e.g. "Senior Engineer at Acme Corp"), an optional subtitle (dates), and the details as bullet points.
+- For Skills/Languages/Achievements: a SINGLE item per section with an empty subtitle and one bullet per skill/language/achievement (do not split these into multiple items).
 - If the provided facts are thin for this particular job, say so plainly in a bullet rather than padding with invented content.
 - Call the record_tailored_resume tool exactly once with the structured resume -- no commentary outside the tool call.`;
 
@@ -140,11 +146,11 @@ export class ClaudeClient {
               },
               summary: {
                 type: ['string', 'null'],
-                description: 'Short professional summary derived from the candidate bio, if one was provided. Null if none.',
+                description: 'A fresh 1-2 sentence professional summary written specifically for THIS job description, leading with 2-4 of the candidate\'s real skills/technologies most relevant to it. Must vary between generations against different job descriptions. Null only if there are no facts to summarize.',
               },
               sections: {
                 type: 'array',
-                description: 'E.g. Experience, Education, Skills, Projects, Certifications, Achievements -- only include sections the provided facts actually support.',
+                description: 'Use headings from this set, in this order, including only ones the facts support: "Experience", "Projects", "Education", "Skills", "Languages", "Certifications", "Achievements". Experience/Projects/Education/Certifications get one item per entry. Skills/Languages/Achievements get exactly ONE item per section, subtitle null, with each skill/language/achievement as its own bullet.',
                 items: {
                   type: 'object',
                   properties: {
@@ -154,7 +160,7 @@ export class ClaudeClient {
                       items: {
                         type: 'object',
                         properties: {
-                          title: { type: 'string', description: 'e.g. "Senior Engineer at Acme Corp".' },
+                          title: { type: 'string', description: 'e.g. "Senior Engineer at Acme Corp" for Experience; for Skills/Languages/Achievements sections, repeat the heading name.' },
                           subtitle: { type: ['string', 'null'], description: 'e.g. dates. Null if not applicable.' },
                           bullets: { type: 'array', items: { type: 'string' } },
                         },
@@ -268,7 +274,7 @@ export class ClaudeClient {
       model: this.model,
       max_tokens: 4000,
       system:
-        'You extract structured data from resumes. Call the record_experience_items tool exactly once with the contact info/bio you can find, plus every distinct experience, education entry, certification, project, achievement, and skill. Do not invent anything not present in the text.',
+        'You extract structured data from resumes. Call the record_experience_items tool exactly once with the contact info/bio you can find, plus every distinct experience, education entry, certification, project, achievement, skill, and spoken/written language. For languages, use the LANGUAGE type with the title as "Language (Proficiency)" e.g. "Spanish (Fluent)" if a proficiency is stated, otherwise just the language name. Do not invent anything not present in the text.',
       tools: [
         {
           name: EXTRACTION_TOOL_NAME,

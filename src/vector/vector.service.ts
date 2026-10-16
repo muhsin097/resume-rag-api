@@ -64,13 +64,29 @@ export class VectorService {
   // this is the retrieval half of RAG: convert the query text (a job
   // description) to a vector, then find which of the user's own chunks are
   // semantically closest to it.
+  // `types`, when given, scopes retrieval to those ExperienceTypes --
+  // used to rank only EXPERIENCE/PROJECT items by JD relevance, while
+  // catalog facts (skills, languages, education, etc.) are fetched in
+  // full elsewhere rather than competing for the same top-K slots.
   async findSimilarExperienceItems(
     userId: string,
     queryText: string,
     limit = 8,
+    types?: string[],
   ): Promise<SimilarExperienceItem[]> {
     const embedding = await this.voyageClient.embed(queryText);
     const vectorLiteral = toVectorLiteral(embedding);
+
+    if (types && types.length > 0) {
+      return this.prisma.$queryRaw<SimilarExperienceItem[]>`
+        SELECT i."id" AS id, (e."embedding" <=> ${vectorLiteral}::vector) AS distance
+        FROM "experience_embeddings" e
+        JOIN "experience_items" i ON i."id" = e."experience_item_id"
+        WHERE i."user_id" = ${userId} AND i."type"::text = ANY(${types})
+        ORDER BY distance ASC
+        LIMIT ${limit}
+      `;
+    }
 
     return this.prisma.$queryRaw<SimilarExperienceItem[]>`
       SELECT i."id" AS id, (e."embedding" <=> ${vectorLiteral}::vector) AS distance

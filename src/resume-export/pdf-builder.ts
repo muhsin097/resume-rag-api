@@ -1,6 +1,10 @@
 import PDFDocument from 'pdfkit';
 import type { ResumeDocument } from '../llm/claude.client.js';
 
+// Matches the web app's --accent brand color, so the downloaded file
+// visually matches the on-screen preview.
+const ACCENT_COLOR = '#6D28D9';
+
 export function buildPdf(doc: ResumeDocument): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const pdf = new PDFDocument({ margin: 50 });
@@ -23,8 +27,9 @@ export function buildPdf(doc: ResumeDocument): Promise<Buffer> {
       pdf
         .fontSize(13)
         .font('Helvetica-Bold')
-        .text(section.heading.toUpperCase(), { underline: true });
-      pdf.font('Helvetica');
+        .fillColor(ACCENT_COLOR)
+        .text(section.heading.toUpperCase());
+      pdf.font('Helvetica').fillColor('#000');
 
       for (const item of section.items) {
         pdf.moveDown(0.4);

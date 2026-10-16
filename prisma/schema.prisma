@@ -24,6 +24,7 @@ enum ExperienceType {
   PROJECT
   ACHIEVEMENT
   SKILL
+  LANGUAGE
 }
 
 model User {

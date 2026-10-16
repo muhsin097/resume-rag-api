@@ -5,8 +5,26 @@ import { VectorService } from '../vector/vector.service.js';
 import { ClaudeClient } from '../llm/claude.client.js';
 import type { ResumeDocument } from '../llm/claude.client.js';
 import { CreateResumeGenerationDto } from './dto/create-resume-generation.dto.js';
+import { ExperienceType } from '../generated/prisma/enums.js';
 
 const RETRIEVAL_TOP_K = 8;
+
+// Skills, languages, education, certifications, and achievements are
+// comprehensive lists a candidate wants shown in full every time -- not
+// trimmed by semantic distance to one JD the way experience/project
+// bullets are. Only EXPERIENCE/PROJECT compete for the top-K relevance
+// slots below.
+const CATALOG_TYPES: ExperienceType[] = [
+  ExperienceType.EDUCATION,
+  ExperienceType.SKILL,
+  ExperienceType.LANGUAGE,
+  ExperienceType.CERTIFICATION,
+  ExperienceType.ACHIEVEMENT,
+];
+const RANKED_TYPES: ExperienceType[] = [
+  ExperienceType.EXPERIENCE,
+  ExperienceType.PROJECT,
+];
 
 // Deterministic, no AI call -- generatedContent stays a flat string (the
 // analyzeMatch input, and the display fallback for rows predating
@@ -50,12 +68,18 @@ export class ResumeGenerationsService {
       );
     }
 
-    const similar = await this.vectorService.findSimilarExperienceItems(
-      userId,
-      dto.jobDescription,
-      RETRIEVAL_TOP_K,
-    );
-    if (similar.length === 0) {
+    const [similar, catalogItems] = await Promise.all([
+      this.vectorService.findSimilarExperienceItems(
+        userId,
+        dto.jobDescription,
+        RETRIEVAL_TOP_K,
+        RANKED_TYPES,
+      ),
+      this.prisma.experienceItem.findMany({
+        where: { userId, type: { in: CATALOG_TYPES } },
+      }),
+    ]);
+    if (similar.length === 0 && catalogItems.length === 0) {
       throw new ForbiddenException(
         'Add some experience items to your profile before generating a tailored resume.',
       );
@@ -63,12 +87,13 @@ export class ResumeGenerationsService {
 
     // Retrieval order (closest match first) is the signal -- re-fetch the
     // full rows, then put them back in that order rather than DB order.
-    const items = await this.prisma.experienceItem.findMany({
+    const rankedItems = await this.prisma.experienceItem.findMany({
       where: { id: { in: similar.map((match) => match.id) } },
     });
-    const orderedItems = similar
-      .map((match) => items.find((item) => item.id === match.id))
+    const orderedRankedItems = similar
+      .map((match) => rankedItems.find((item) => item.id === match.id))
       .filter((item): item is NonNullable<typeof item> => Boolean(item));
+    const orderedItems = [...orderedRankedItems, ...catalogItems];
 
     const structuredContent = await this.claudeClient.generateTailoredResume({
       jobDescription: dto.jobDescription,
