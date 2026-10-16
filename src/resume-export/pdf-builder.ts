@@ -14,6 +14,10 @@ export function buildPdf(doc: ResumeDocument): Promise<Buffer> {
     pdf.on('error', reject);
 
     pdf.fontSize(20).fillColor('#000').text(doc.name);
+    if (doc.title) {
+      pdf.fontSize(12).font('Helvetica-Bold').fillColor(ACCENT_COLOR).text(doc.title);
+      pdf.font('Helvetica');
+    }
     pdf.fontSize(10).fillColor('#555555').text(doc.contactLine);
     pdf.fillColor('#000');
 

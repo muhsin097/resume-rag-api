@@ -54,6 +54,7 @@ export interface MatchAnalysis {
 // either of those would be fragile.
 export interface ResumeDocument {
   name: string;
+  title: string | null;
   contactLine: string;
   summary: string | null;
   sections: {
@@ -74,6 +75,7 @@ Hard rules:
 - Do NOT invent any experience, employer, skill, achievement, or language that is not present in the provided facts. You are rephrasing and prioritizing real facts, not generating new ones.
 - You MAY reword, reorder, and emphasize the real facts to better match the job description's own terminology and keywords (this is what makes the resume ATS-friendly).
 - This resume must be a FRESH rewrite tailored to THIS job description, not a generic restatement. Pull specific keywords, technologies, and phrasing straight from the job description wherever a provided fact genuinely supports it, so two generations against two different job descriptions for the same candidate read differently -- in which facts are emphasized, which keywords surface in the bullets, and the summary's wording.
+- The "title" is a short professional title (e.g. "Senior Backend Developer", "Full Stack Engineer") that appears directly under the candidate's name. Infer it from the candidate's real experience (their most senior/recent relevant role type), but angle the wording toward how this job description frames the role when the facts genuinely support it (e.g. "Backend Engineer" vs "Full Stack Developer" depending on which the candidate's real skills best match for this JD). Do not invent a title the candidate's experience doesn't support. Null only if there are no EXPERIENCE/PROJECT facts to infer one from.
 - The "summary" is a short (max 2 sentences) professional summary, written fresh for this job description -- lead with the 2-4 of the candidate's real skills/technologies most relevant to this specific job description. Do not pad or repeat the same summary across different job descriptions.
 - Structure sections in this order, including only the ones the provided facts support: Experience, Projects, Education, Skills, Languages, Certifications, Achievements.
 - For Experience/Projects/Education/Certifications: one item per role/degree/project/cert, with a concise bolded title (e.g. "Senior Engineer at Acme Corp"), an optional subtitle (dates), and the details as bullet points.
@@ -140,6 +142,10 @@ export class ClaudeClient {
             type: 'object',
             properties: {
               name: { type: 'string' },
+              title: {
+                type: ['string', 'null'],
+                description: 'Short professional title under the name, e.g. "Senior Backend Developer". Inferred from real experience, angled toward this job description where genuinely supported. Null only if there are no EXPERIENCE/PROJECT facts to infer one from.',
+              },
               contactLine: {
                 type: 'string',
                 description: 'Pipe-separated contact details, e.g. "San Francisco, CA | 555-1234".',
@@ -172,7 +178,7 @@ export class ClaudeClient {
                 },
               },
             },
-            required: ['name', 'contactLine', 'summary', 'sections'],
+            required: ['name', 'title', 'contactLine', 'summary', 'sections'],
           },
         },
       ],
@@ -189,7 +195,7 @@ export class ClaudeClient {
       (block) => block.type === 'tool_use' && block.name === GENERATION_TOOL_NAME,
     );
     if (toolUseBlock?.type !== 'tool_use') {
-      return { name: params.candidate.name, contactLine: contactLines, summary: null, sections: [] };
+      return { name: params.candidate.name, title: null, contactLine: contactLines, summary: null, sections: [] };
     }
 
     return toolUseBlock.input as ResumeDocument;

@@ -11,10 +11,23 @@ export function buildDocx(doc: ResumeDocument): Promise<Buffer> {
     new Paragraph({
       children: [new TextRun({ text: doc.name, bold: true, size: 32, font: FONT })],
     }),
+  ];
+
+  if (doc.title) {
+    children.push(
+      new Paragraph({
+        children: [
+          new TextRun({ text: doc.title, bold: true, color: ACCENT_COLOR, size: 22, font: FONT }),
+        ],
+      }),
+    );
+  }
+
+  children.push(
     new Paragraph({
       children: [new TextRun({ text: doc.contactLine, color: '555555', font: FONT })],
     }),
-  ];
+  );
 
   if (doc.summary) {
     children.push(new Paragraph({ text: '' }));

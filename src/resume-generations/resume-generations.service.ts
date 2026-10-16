@@ -31,7 +31,7 @@ const RANKED_TYPES: ExperienceType[] = [
 // structuredContent) derived from the same structured data rather than a
 // second, possibly-divergent generation.
 function flattenResumeDocument(doc: ResumeDocument): string {
-  const lines = [doc.name, doc.contactLine];
+  const lines = doc.title ? [doc.name, doc.title, doc.contactLine] : [doc.name, doc.contactLine];
   if (doc.summary) lines.push('', doc.summary);
   for (const section of doc.sections) {
     lines.push('', section.heading.toUpperCase());
