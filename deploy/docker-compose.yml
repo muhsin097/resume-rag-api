@@ -1,9 +1,8 @@
-# Lives at resume-rag-api/deploy/docker-compose.yml. Assumes resume-rag-web
-# and resume-rag-admin are both cloned as siblings of resume-rag-api (same
-# parent directory). `api` is reached over the compose network at
-# http://api:3000, so it never needs a public port. `web`/`admin` aren't
-# publicly exposed either -- only `caddy` (80/443) is, reverse-proxying
-# both by hostname (see Caddyfile).
+# Lives at resume-rag-api/deploy/docker-compose.yml. `web` and `admin` now
+# run on Vercel (see ceasetoresume.online / admin.ceasetoresume.online) --
+# this box only runs the API, its database, and Caddy (which exposes the
+# API publicly on api.ceasetoresume.online for the Vercel-hosted frontends
+# to call).
 services:
   postgres:
     image: pgvector/pgvector:pg16
@@ -39,42 +38,6 @@ services:
     depends_on:
       - postgres
 
-  web:
-    build: ../../resume-rag-web
-    restart: unless-stopped
-    logging:
-      driver: awslogs
-      options:
-        awslogs-region: ap-southeast-2
-        awslogs-group: /resume-rag/web
-        awslogs-create-group: "true"
-        awslogs-stream: web
-    environment:
-      RESUME_API_BASE_URL: http://api:3000
-      AUTH_SECRET: ${AUTH_SECRET}
-      AUTH_URL: https://ceasetoresume.online
-      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
-      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
-    depends_on:
-      - api
-
-  admin:
-    build: ../../resume-rag-admin
-    restart: unless-stopped
-    logging:
-      driver: awslogs
-      options:
-        awslogs-region: ap-southeast-2
-        awslogs-group: /resume-rag/admin
-        awslogs-create-group: "true"
-        awslogs-stream: admin
-    environment:
-      RESUME_API_BASE_URL: http://api:3000
-      AUTH_SECRET: ${ADMIN_AUTH_SECRET}
-      AUTH_URL: https://admin.ceasetoresume.online
-    depends_on:
-      - api
-
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
@@ -86,8 +49,7 @@ services:
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
-      - web
-      - admin
+      - api
 
 volumes:
   pgdata:
