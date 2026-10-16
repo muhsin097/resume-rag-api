@@ -1,9 +1,9 @@
 # Lives at resume-rag-api/deploy/docker-compose.yml. Assumes resume-rag-web
 # and resume-rag-admin are both cloned as siblings of resume-rag-api (same
 # parent directory). `api` is reached over the compose network at
-# http://api:3000, so it never needs a public port. `web`/`admin` keep
-# their direct :3001/:3002 port mappings as a fallback during the Caddy
-# cutover -- remove once HTTPS is confirmed working end-to-end.
+# http://api:3000, so it never needs a public port. `web`/`admin` aren't
+# publicly exposed either -- only `caddy` (80/443) is, reverse-proxying
+# both by hostname (see Caddyfile).
 services:
   postgres:
     image: pgvector/pgvector:pg16
@@ -42,8 +42,6 @@ services:
   web:
     build: ../../resume-rag-web
     restart: unless-stopped
-    ports:
-      - "3001:3001"
     logging:
       driver: awslogs
       options:
@@ -61,8 +59,6 @@ services:
   admin:
     build: ../../resume-rag-admin
     restart: unless-stopped
-    ports:
-      - "3002:3002"
     logging:
       driver: awslogs
       options:

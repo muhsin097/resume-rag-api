@@ -22,15 +22,13 @@ this one so CI/CD and manual commands target the same place.)
   - SSH (22) from anywhere -- needed so GitHub Actions can reach it too;
     key-based auth only (password auth is disabled), so this is the
     actual security boundary
-  - TCP 3001 from anywhere (the web app's port) -- kept as a fallback
-    alongside 80/443 below during the move to the custom domain;
-    remove once HTTPS is confirmed stable
-  - TCP 3002 from anywhere (the admin app's port) -- the admin app has
-    its own login gate (only accounts with `is_admin = true` can sign
-    in, see step 8), so this is deliberately not restricted by IP;
-    same fallback note as 3001
   - TCP 80 and TCP 443 from anywhere -- Caddy (see step 9): 80 for the
-    Let's Encrypt HTTP-01 challenge, 443 for the actual site over HTTPS
+    Let's Encrypt HTTP-01 challenge, 443 for the actual site over HTTPS.
+    `web`/`admin` aren't exposed on their own ports at all -- Caddy is
+    the only public entrypoint, reverse-proxying by hostname. The admin
+    app has its own login gate (only `is_admin = true` accounts, see
+    step 8), so sharing the same public entrypoint as the candidate app
+    is fine
 
 ## 2. SSH in and install Docker
 
@@ -77,10 +75,6 @@ cp .env.example .env
 Edit `.env` and fill in:
 - `DB_PASSWORD`, `JWT_SECRET`, `AUTH_SECRET`, `ADMIN_AUTH_SECRET`: `openssl rand -hex 32` (or similar) for each -- `AUTH_SECRET` and `ADMIN_AUTH_SECRET` must be different (two separate NextAuth apps/cookies)
 - `VOYAGE_API_KEY`, `ANTHROPIC_API_KEY`: your real keys
-- `PUBLIC_IP`: **the instance's public IP, typed literally** -- don't
-  rely on the EC2 metadata service for this; it requires an IMDSv2
-  token and a plain `curl` against it silently returns empty, producing
-  a broken `http://:3001` URL that crashes the web app at runtime
 
 ## 6. Build and run
 
@@ -98,14 +92,14 @@ docker compose exec api npx prisma migrate deploy
 ## 7. Verify
 
 ```bash
-docker compose ps                                                  # all 4 should show "Up"
+docker compose ps                                                  # all 5 should show "Up"
 docker compose exec api node -e "fetch('http://localhost:3000/health').then(r=>r.text()).then(console.log)"
-curl -s http://localhost:3001/login                                  # should return HTML
-curl -s http://localhost:3002/login                                  # should return HTML
+curl -s https://ceasetoresume.online/login                           # should return HTML
+curl -s https://admin.ceasetoresume.online/login                     # should return HTML
 ```
 
-Then visit `http://<public-ip>:3001` (candidate app) or
-`http://<public-ip>:3002` (admin dashboard) in a browser.
+Then visit `https://ceasetoresume.online` (candidate app) or
+`https://admin.ceasetoresume.online` (admin dashboard) in a browser.
 
 ## 8. Grant admin access
 
@@ -127,14 +121,9 @@ records) at the instance's public IP. A `caddy` service in
 container (`deploy/Caddyfile`) and automatically obtains/renews a free
 Let's Encrypt certificate for both -- no certbot, no manual renewal
 cron. `AUTH_URL`/`WEB_ORIGIN` across all three app services point at
-the HTTPS domain rather than `http://${PUBLIC_IP}:300x`.
-
-`web`/`admin` still publish 3001/3002 directly as a fallback during
-the cutover. Once `https://ceasetoresume.online` and
-`https://admin.ceasetoresume.online` are both confirmed working:
-remove those `ports:` entries from `docker-compose.yml`, `docker
-compose up -d`, then close 3001/3002 in the security group (leave 80
-+ 443 open, plus 22 for SSH).
+the HTTPS domain rather than `http://${PUBLIC_IP}:300x`, and `web`/
+`admin` no longer publish 3001/3002 at all -- Caddy (80/443) is the
+only public entrypoint into either app.
 
 ## CI/CD
 
