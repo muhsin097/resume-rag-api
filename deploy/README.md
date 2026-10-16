@@ -22,10 +22,15 @@ this one so CI/CD and manual commands target the same place.)
   - SSH (22) from anywhere -- needed so GitHub Actions can reach it too;
     key-based auth only (password auth is disabled), so this is the
     actual security boundary
-  - TCP 3001 from anywhere (the web app's port)
+  - TCP 3001 from anywhere (the web app's port) -- kept as a fallback
+    alongside 80/443 below during the move to the custom domain;
+    remove once HTTPS is confirmed stable
   - TCP 3002 from anywhere (the admin app's port) -- the admin app has
     its own login gate (only accounts with `is_admin = true` can sign
-    in, see step 8), so this is deliberately not restricted by IP
+    in, see step 8), so this is deliberately not restricted by IP;
+    same fallback note as 3001
+  - TCP 80 and TCP 443 from anywhere -- Caddy (see step 9): 80 for the
+    Let's Encrypt HTTP-01 challenge, 443 for the actual site over HTTPS
 
 ## 2. SSH in and install Docker
 
@@ -113,6 +118,23 @@ user-facing endpoint):
 docker compose exec postgres psql -U resumerag -d resumerag \
   -c "UPDATE users SET is_admin = true WHERE email = 'you@example.com';"
 ```
+
+## 9. Domain + HTTPS (Caddy)
+
+`ceasetoresume.online` and `admin.ceasetoresume.online` both point (A
+records) at the instance's public IP. A `caddy` service in
+`docker-compose.yml` reverse-proxies each hostname to the right
+container (`deploy/Caddyfile`) and automatically obtains/renews a free
+Let's Encrypt certificate for both -- no certbot, no manual renewal
+cron. `AUTH_URL`/`WEB_ORIGIN` across all three app services point at
+the HTTPS domain rather than `http://${PUBLIC_IP}:300x`.
+
+`web`/`admin` still publish 3001/3002 directly as a fallback during
+the cutover. Once `https://ceasetoresume.online` and
+`https://admin.ceasetoresume.online` are both confirmed working:
+remove those `ports:` entries from `docker-compose.yml`, `docker
+compose up -d`, then close 3001/3002 in the security group (leave 80
++ 443 open, plus 22 for SSH).
 
 ## CI/CD
 

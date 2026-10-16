@@ -1,8 +1,9 @@
 # Lives at resume-rag-api/deploy/docker-compose.yml. Assumes resume-rag-web
 # and resume-rag-admin are both cloned as siblings of resume-rag-api (same
-# parent directory). Only `web` and `admin` are exposed publicly -- `api`
-# is reached over the compose network at http://api:3000, so it never
-# needs a public port.
+# parent directory). `api` is reached over the compose network at
+# http://api:3000, so it never needs a public port. `web`/`admin` keep
+# their direct :3001/:3002 port mappings as a fallback during the Caddy
+# cutover -- remove once HTTPS is confirmed working end-to-end.
 services:
   postgres:
     image: pgvector/pgvector:pg16
@@ -28,7 +29,7 @@ services:
       DATABASE_URL: postgresql://resumerag:${DB_PASSWORD}@postgres:5432/resumerag?schema=public
       PORT: "3000"
       JWT_SECRET: ${JWT_SECRET}
-      WEB_ORIGIN: http://${PUBLIC_IP}:3001
+      WEB_ORIGIN: https://ceasetoresume.online
       VOYAGE_API_KEY: ${VOYAGE_API_KEY}
       VOYAGE_EMBEDDING_MODEL: voyage-3-lite
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
@@ -53,7 +54,7 @@ services:
     environment:
       RESUME_API_BASE_URL: http://api:3000
       AUTH_SECRET: ${AUTH_SECRET}
-      AUTH_URL: http://${PUBLIC_IP}:3001
+      AUTH_URL: https://ceasetoresume.online
     depends_on:
       - api
 
@@ -72,9 +73,25 @@ services:
     environment:
       RESUME_API_BASE_URL: http://api:3000
       AUTH_SECRET: ${ADMIN_AUTH_SECRET}
-      AUTH_URL: http://${PUBLIC_IP}:3002
+      AUTH_URL: https://admin.ceasetoresume.online
     depends_on:
       - api
 
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - web
+      - admin
+
 volumes:
   pgdata:
+  caddy_data:
+  caddy_config:

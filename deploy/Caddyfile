@@ -1,0 +1,7 @@
+ceasetoresume.online {
+	reverse_proxy web:3001
+}
+
+admin.ceasetoresume.online {
+	reverse_proxy admin:3002
+}
