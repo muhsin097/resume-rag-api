@@ -5,3 +5,7 @@ ceasetoresume.online {
 admin.ceasetoresume.online {
 	reverse_proxy admin:3002
 }
+
+api.ceasetoresume.online {
+	reverse_proxy api:3000
+}
