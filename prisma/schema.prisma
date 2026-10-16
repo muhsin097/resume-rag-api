@@ -34,7 +34,7 @@ model User {
   phone               String?
   location            String?
   bio                 String?            @db.Text
-  jobSearchEnabled    Boolean            @default(false) @map("job_search_enabled")
+  jobSearchEnabled    Boolean            @default(true) @map("job_search_enabled")
   plan                Plan               @default(FREE)
   freeGenerationsUsed Int                @default(0) @map("free_generations_used")
   // Gates access to the separate admin dashboard app -- not exposed via any
@@ -85,16 +85,19 @@ model ExperienceEmbedding {
 }
 
 // Recruiters are a separate persona, not a kind of User -- they have no
-// experience items, no free-generation limit, nothing in common with the
-// candidate model, so they get their own table and their own auth rather
-// than overloading User with a pile of irrelevant nullable fields.
+// experience items, nothing in common with the candidate model, so they
+// get their own table and their own auth rather than overloading User
+// with a pile of irrelevant nullable fields.
 model Recruiter {
-  id           String   @id @default(uuid())
-  email        String   @unique
-  passwordHash String   @map("password_hash")
-  name         String
-  companyName  String   @map("company_name")
-  createdAt    DateTime @default(now()) @map("created_at")
+  id                 String   @id @default(uuid())
+  email              String   @unique
+  passwordHash       String   @map("password_hash")
+  name               String
+  companyName        String   @map("company_name")
+  // Spends against RECRUITER_FREE_CREDITS_LIMIT -- gates the LLM-ranked
+  // "best 3 fits" search, not the free cosine-based search itself.
+  rankingCreditsUsed Int      @default(0) @map("ranking_credits_used")
+  createdAt          DateTime @default(now()) @map("created_at")
 
   @@map("recruiters")
 }
