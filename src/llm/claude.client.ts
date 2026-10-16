@@ -39,11 +39,30 @@ export interface ExtractedResumeData {
 
 const EXTRACTION_TOOL_NAME = 'record_experience_items';
 const ANALYSIS_TOOL_NAME = 'record_match_analysis';
+const GENERATION_TOOL_NAME = 'record_tailored_resume';
 
 export interface MatchAnalysis {
   matchScore: number;
   matchedKeywords: string[];
   missingKeywords: string[];
+}
+
+// Structured instead of a markdown blob specifically so it can be rendered
+// as real headings/bullets on screen AND fed into docx/pdfkit for actual
+// downloadable files -- regex-sniffing markdown back out of free text for
+// either of those would be fragile.
+export interface ResumeDocument {
+  name: string;
+  contactLine: string;
+  summary: string | null;
+  sections: {
+    heading: string;
+    items: {
+      title: string;
+      subtitle: string | null;
+      bullets: string[];
+    }[];
+  }[];
 }
 
 const SYSTEM_PROMPT = `You are a resume-writing assistant.
@@ -53,8 +72,8 @@ You will be given a job description and a set of verified facts about a candidat
 Hard rules:
 - Do NOT invent any experience, employer, skill, or achievement that is not present in the provided facts. You are rephrasing and prioritizing real facts, not generating new ones.
 - You MAY reword, reorder, and emphasize the real facts to better match the job description's own terminology and keywords (this is what makes the resume ATS-friendly).
-- If the provided facts are thin for this particular job, say so plainly in the output rather than padding with invented content.
-- Output a clean resume in markdown (headings, bullet points) -- no commentary before or after it.`;
+- If the provided facts are thin for this particular job, say so plainly in a bullet rather than padding with invented content.
+- Call the record_tailored_resume tool exactly once with the structured resume -- no commentary outside the tool call.`;
 
 // Thin wrapper over the Anthropic SDK -- isolates the one place prompt
 // construction happens, so the "never invent experience" constraint lives
@@ -82,7 +101,7 @@ export class ClaudeClient {
       location?: string | null;
       bio?: string | null;
     };
-  }): Promise<string> {
+  }): Promise<ResumeDocument> {
     const factsBlock = params.facts
       .map((fact, index) => {
         const header = fact.organization
@@ -107,16 +126,67 @@ export class ClaudeClient {
       model: this.model,
       max_tokens: 2000,
       system: SYSTEM_PROMPT,
+      tools: [
+        {
+          name: GENERATION_TOOL_NAME,
+          description: 'Record the structured, tailored resume',
+          input_schema: {
+            type: 'object',
+            properties: {
+              name: { type: 'string' },
+              contactLine: {
+                type: 'string',
+                description: 'Pipe-separated contact details, e.g. "San Francisco, CA | 555-1234".',
+              },
+              summary: {
+                type: ['string', 'null'],
+                description: 'Short professional summary derived from the candidate bio, if one was provided. Null if none.',
+              },
+              sections: {
+                type: 'array',
+                description: 'E.g. Experience, Education, Skills, Projects, Certifications, Achievements -- only include sections the provided facts actually support.',
+                items: {
+                  type: 'object',
+                  properties: {
+                    heading: { type: 'string' },
+                    items: {
+                      type: 'array',
+                      items: {
+                        type: 'object',
+                        properties: {
+                          title: { type: 'string', description: 'e.g. "Senior Engineer at Acme Corp".' },
+                          subtitle: { type: ['string', 'null'], description: 'e.g. dates. Null if not applicable.' },
+                          bullets: { type: 'array', items: { type: 'string' } },
+                        },
+                        required: ['title', 'subtitle', 'bullets'],
+                      },
+                    },
+                  },
+                  required: ['heading', 'items'],
+                },
+              },
+            },
+            required: ['name', 'contactLine', 'summary', 'sections'],
+          },
+        },
+      ],
+      tool_choice: { type: 'tool', name: GENERATION_TOOL_NAME },
       messages: [
         {
           role: 'user',
-          content: `Job description:\n${params.jobDescription}\n\nCandidate contact header (include verbatim at the top of the resume):\n${contactLines}\n${bioLine}\n\nCandidate's verified facts (most relevant first):\n${factsBlock}\n\nWrite a tailored resume using only the facts above.`,
+          content: `Job description:\n${params.jobDescription}\n\nCandidate contact header:\n${contactLines}\n${bioLine}\n\nCandidate's verified facts (most relevant first):\n${factsBlock}\n\nBuild a tailored resume using only the facts above.`,
         },
       ],
     });
 
-    const textBlock = response.content.find((block) => block.type === 'text');
-    return textBlock?.type === 'text' ? textBlock.text : '';
+    const toolUseBlock = response.content.find(
+      (block) => block.type === 'tool_use' && block.name === GENERATION_TOOL_NAME,
+    );
+    if (toolUseBlock?.type !== 'tool_use') {
+      return { name: params.candidate.name, contactLine: contactLines, summary: null, sections: [] };
+    }
+
+    return toolUseBlock.input as ResumeDocument;
   }
 
   // Forced tool-use, same pattern as extraction -- compares the JD against

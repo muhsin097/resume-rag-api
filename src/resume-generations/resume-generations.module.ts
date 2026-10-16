@@ -8,5 +8,6 @@ import { ResumeGenerationsService } from './resume-generations.service.js';
   imports: [VectorModule, LlmModule],
   controllers: [ResumeGenerationsController],
   providers: [ResumeGenerationsService],
+  exports: [ResumeGenerationsService],
 })
 export class ResumeGenerationsModule {}

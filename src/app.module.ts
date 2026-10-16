@@ -10,6 +10,7 @@ import { ResumeImportModule } from './resume-import/resume-import.module.js';
 import { AdminModule } from './admin/admin.module.js';
 import { RecruiterAuthModule } from './recruiter-auth/recruiter-auth.module.js';
 import { RecruiterSearchModule } from './recruiter-search/recruiter-search.module.js';
+import { ResumeExportModule } from './resume-export/resume-export.module.js';
 
 @Module({
   imports: [
@@ -24,6 +25,7 @@ import { RecruiterSearchModule } from './recruiter-search/recruiter-search.modul
     AdminModule,
     RecruiterAuthModule,
     RecruiterSearchModule,
+    ResumeExportModule,
   ],
 })
 export class AppModule {}

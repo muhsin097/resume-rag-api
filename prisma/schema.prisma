@@ -113,7 +113,13 @@ model ResumeGeneration {
   user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   jobDescription   String   @db.Text @map("job_description")
   retrievedItemIds Json     @map("retrieved_item_ids")
+  // Flat text, derived from structuredContent -- kept as the display
+  // fallback for rows created before structuredContent existed, and as
+  // the input to analyzeMatch (which needs a plain string, not JSON).
   generatedContent String   @db.Text @map("generated_content")
+  // Null for generations created before this field existed. Export
+  // (DOCX/PDF) requires this -- see resume-export module.
+  structuredContent Json?   @map("structured_content")
   matchScore       Int      @default(0) @map("match_score")
   matchedKeywords  String[] @default([]) @map("matched_keywords")
   missingKeywords  String[] @default([]) @map("missing_keywords")

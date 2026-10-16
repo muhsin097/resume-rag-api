@@ -3,9 +3,29 @@ import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { VectorService } from '../vector/vector.service.js';
 import { ClaudeClient } from '../llm/claude.client.js';
+import type { ResumeDocument } from '../llm/claude.client.js';
 import { CreateResumeGenerationDto } from './dto/create-resume-generation.dto.js';
 
 const RETRIEVAL_TOP_K = 8;
+
+// Deterministic, no AI call -- generatedContent stays a flat string (the
+// analyzeMatch input, and the display fallback for rows predating
+// structuredContent) derived from the same structured data rather than a
+// second, possibly-divergent generation.
+function flattenResumeDocument(doc: ResumeDocument): string {
+  const lines = [doc.name, doc.contactLine];
+  if (doc.summary) lines.push('', doc.summary);
+  for (const section of doc.sections) {
+    lines.push('', section.heading.toUpperCase());
+    for (const item of section.items) {
+      lines.push(item.subtitle ? `${item.title} -- ${item.subtitle}` : item.title);
+      for (const bullet of item.bullets) {
+        lines.push(`- ${bullet}`);
+      }
+    }
+  }
+  return lines.join('\n');
+}
 
 @Injectable()
 export class ResumeGenerationsService {
@@ -50,7 +70,7 @@ export class ResumeGenerationsService {
       .map((match) => items.find((item) => item.id === match.id))
       .filter((item): item is NonNullable<typeof item> => Boolean(item));
 
-    const generatedContent = await this.claudeClient.generateTailoredResume({
+    const structuredContent = await this.claudeClient.generateTailoredResume({
       jobDescription: dto.jobDescription,
       facts: orderedItems,
       candidate: {
@@ -60,6 +80,7 @@ export class ResumeGenerationsService {
         bio: user.bio,
       },
     });
+    const generatedContent = flattenResumeDocument(structuredContent);
 
     const analysis = await this.claudeClient.analyzeMatch({
       jobDescription: dto.jobDescription,
@@ -72,6 +93,7 @@ export class ResumeGenerationsService {
         jobDescription: dto.jobDescription,
         retrievedItemIds: orderedItems.map((item) => item.id),
         generatedContent,
+        structuredContent: structuredContent as object,
         matchScore: analysis.matchScore,
         matchedKeywords: analysis.matchedKeywords,
         missingKeywords: analysis.missingKeywords,
