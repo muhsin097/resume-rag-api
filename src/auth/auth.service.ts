@@ -41,7 +41,10 @@ export class AuthService {
     const user = await this.prisma.user.findUnique({
       where: { email: dto.email.toLowerCase() },
     });
-    if (!user) {
+    // No passwordHash means this account was created via Google OAuth --
+    // there's nothing to compare against, so reject cleanly rather than
+    // let bcrypt.compare throw on a null hash.
+    if (!user || !user.passwordHash) {
       throw new UnauthorizedException('Invalid email or password');
     }
 
@@ -52,6 +55,21 @@ export class AuthService {
     if (!passwordMatches) {
       throw new UnauthorizedException('Invalid email or password');
     }
+
+    return this.buildAuthResponse(user);
+  }
+
+  // Called from resume-rag-web's NextAuth jwt callback after Google has
+  // already verified the email -- never reachable from outside the compose
+  // network (api has no public port), so there's no path for an outside
+  // caller to assert an arbitrary email here.
+  async oauthLogin(email: string, name: string) {
+    const normalizedEmail = email.toLowerCase();
+    const user = await this.prisma.user.upsert({
+      where: { email: normalizedEmail },
+      update: {},
+      create: { email: normalizedEmail, name },
+    });
 
     return this.buildAuthResponse(user);
   }

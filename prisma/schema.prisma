@@ -29,7 +29,10 @@ enum ExperienceType {
 model User {
   id                  String             @id @default(uuid())
   email               String             @unique
-  passwordHash        String             @map("password_hash")
+  // Null for accounts created via Google OAuth -- nothing to check a
+  // password against, so login must reject those cleanly rather than
+  // crash bcrypt.compare on null.
+  passwordHash        String?            @map("password_hash")
   name                String
   phone               String?
   location            String?
@@ -91,9 +94,11 @@ model ExperienceEmbedding {
 model Recruiter {
   id                 String   @id @default(uuid())
   email              String   @unique
-  passwordHash       String   @map("password_hash")
+  // Both null for accounts created via Google OAuth -- no password to
+  // check, and Google doesn't hand us a company name at signup.
+  passwordHash       String?  @map("password_hash")
   name               String
-  companyName        String   @map("company_name")
+  companyName        String?  @map("company_name")
   // Spends against RECRUITER_FREE_CREDITS_LIMIT -- gates the LLM-ranked
   // "best 3 fits" search, not the free cosine-based search itself.
   rankingCreditsUsed Int      @default(0) @map("ranking_credits_used")

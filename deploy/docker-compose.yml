@@ -53,6 +53,8 @@ services:
       RESUME_API_BASE_URL: http://api:3000
       AUTH_SECRET: ${AUTH_SECRET}
       AUTH_URL: https://ceasetoresume.online
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
     depends_on:
       - api
 

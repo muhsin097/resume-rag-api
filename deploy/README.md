@@ -75,6 +75,11 @@ cp .env.example .env
 Edit `.env` and fill in:
 - `DB_PASSWORD`, `JWT_SECRET`, `AUTH_SECRET`, `ADMIN_AUTH_SECRET`: `openssl rand -hex 32` (or similar) for each -- `AUTH_SECRET` and `ADMIN_AUTH_SECRET` must be different (two separate NextAuth apps/cookies)
 - `VOYAGE_API_KEY`, `ANTHROPIC_API_KEY`: your real keys
+- `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`: from a Google Cloud OAuth
+  client (Web application type) with authorized redirect URIs
+  `https://ceasetoresume.online/api/auth/callback/google-candidate` and
+  `.../google-recruiter` -- one client, two redirect URIs, shared by both
+  personas in `resume-rag-web`
 
 ## 6. Build and run
 

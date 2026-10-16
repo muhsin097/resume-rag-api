@@ -45,7 +45,8 @@ export class RecruiterAuthService {
     const recruiter = await this.prisma.recruiter.findUnique({
       where: { email: dto.email.toLowerCase() },
     });
-    if (!recruiter) {
+    // No passwordHash means this account was created via Google OAuth.
+    if (!recruiter || !recruiter.passwordHash) {
       throw new UnauthorizedException('Invalid email or password');
     }
 
@@ -60,11 +61,26 @@ export class RecruiterAuthService {
     return this.buildAuthResponse(recruiter);
   }
 
+  // Called from resume-rag-web's NextAuth jwt callback after Google has
+  // already verified the email -- same trust boundary as AuthService's
+  // oauthLogin (api has no public port, only reachable from resume-rag-web
+  // over the compose network).
+  async oauthLogin(email: string, name: string) {
+    const normalizedEmail = email.toLowerCase();
+    const recruiter = await this.prisma.recruiter.upsert({
+      where: { email: normalizedEmail },
+      update: {},
+      create: { email: normalizedEmail, name },
+    });
+
+    return this.buildAuthResponse(recruiter);
+  }
+
   private buildAuthResponse(recruiter: {
     id: string;
     email: string;
     name: string;
-    companyName: string;
+    companyName: string | null;
   }) {
     // kind: 'recruiter' is what lets guards reject a candidate token here
     // and vice versa -- the two strategies live under different Passport
