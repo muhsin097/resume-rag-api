@@ -6,17 +6,19 @@ import { ClaudeClient } from '../llm/claude.client.js';
 import type { ResumeDocument } from '../llm/claude.client.js';
 import { CreateResumeGenerationDto } from './dto/create-resume-generation.dto.js';
 import { ExperienceType } from '../generated/prisma/enums.js';
+import { buildDeterministicSections } from './deterministic-sections.js';
 
-// Skills, languages, education, certifications, and achievements are
-// comprehensive lists a candidate wants shown in full every time -- not
-// trimmed by semantic distance to one JD the way experience/project
-// bullets are.
-const CATALOG_TYPES: ExperienceType[] = [
+// Education/Skills/Languages/Certifications are built deterministically in
+// code (deterministic-sections.ts) -- they never need JD-aware rewriting,
+// so they're fetched in full but never sent to Claude at all. ACHIEVEMENT
+// is the one catalog type that still goes to the model, since "fold this
+// into the right Experience role instead of listing it separately" is a
+// judgment call worth an LLM.
+const DETERMINISTIC_TYPES: ExperienceType[] = [
   ExperienceType.EDUCATION,
   ExperienceType.SKILL,
   ExperienceType.LANGUAGE,
   ExperienceType.CERTIFICATION,
-  ExperienceType.ACHIEVEMENT,
 ];
 // EXPERIENCE and PROJECT each get their own top-K budget, retrieved
 // separately -- they used to share a single pool, which meant a candidate
@@ -85,10 +87,13 @@ export class ResumeGenerationsService {
     // Embed the JD once and reuse it for every ranked type's query, rather
     // than re-embedding the identical text per type (which doubled Voyage
     // usage once EXPERIENCE/PROJECT got split into separate top-K calls).
-    const [queryEmbedding, catalogItems] = await Promise.all([
+    const [queryEmbedding, deterministicItems, achievementItems] = await Promise.all([
       this.vectorService.embedQuery(dto.jobDescription),
       this.prisma.experienceItem.findMany({
-        where: { userId, type: { in: CATALOG_TYPES } },
+        where: { userId, type: { in: DETERMINISTIC_TYPES } },
+      }),
+      this.prisma.experienceItem.findMany({
+        where: { userId, type: ExperienceType.ACHIEVEMENT },
       }),
     ]);
     const similarByType = await Promise.all(
@@ -97,7 +102,7 @@ export class ResumeGenerationsService {
       ),
     );
     const similar = similarByType.flat();
-    if (similar.length === 0 && catalogItems.length === 0) {
+    if (similar.length === 0 && deterministicItems.length === 0 && achievementItems.length === 0) {
       throw new ForbiddenException(
         'Add some experience items to your profile before generating a tailored resume.',
       );
@@ -111,11 +116,14 @@ export class ResumeGenerationsService {
     const orderedRankedItems = similar
       .map((match) => rankedItems.find((item) => item.id === match.id))
       .filter((item): item is NonNullable<typeof item> => Boolean(item));
-    const orderedItems = [...orderedRankedItems, ...catalogItems];
+    // Everything considered for this generation, for provenance/debugging
+    // (retrievedItemIds) -- deterministic items included even though they
+    // never reach Claude, since they still end up in the final document.
+    const orderedItems = [...orderedRankedItems, ...achievementItems, ...deterministicItems];
 
     const structuredContent = await this.claudeClient.generateTailoredResume({
       jobDescription: dto.jobDescription,
-      facts: orderedItems,
+      facts: [...orderedRankedItems, ...achievementItems],
       candidate: {
         name: user.name,
         email: user.email,
@@ -124,6 +132,28 @@ export class ResumeGenerationsService {
         bio: user.bio,
       },
     });
+
+    // Splice in the deterministic sections Claude never saw: Skills right
+    // after the summary, Education/Languages/Certifications after
+    // Experience/Projects but before a trailing standalone Achievements
+    // section (if Claude didn't fold every achievement into a role).
+    const { skills, rest } = buildDeterministicSections(deterministicItems, dto.jobDescription);
+    const achievementsHeadingIndex = structuredContent.sections.findIndex(
+      (s) => s.heading === 'Achievements',
+    );
+    const beforeAchievements =
+      achievementsHeadingIndex === -1
+        ? structuredContent.sections
+        : structuredContent.sections.slice(0, achievementsHeadingIndex);
+    const achievementsSection =
+      achievementsHeadingIndex === -1 ? [] : [structuredContent.sections[achievementsHeadingIndex]];
+    structuredContent.sections = [
+      ...(skills ? [skills] : []),
+      ...beforeAchievements,
+      ...rest,
+      ...achievementsSection,
+    ];
+
     const generatedContent = flattenResumeDocument(structuredContent);
 
     const analysis = await this.claudeClient.analyzeMatch({
