@@ -79,7 +79,8 @@ Hard rules:
 - The "summary" is a short (max 2 sentences) professional summary, written fresh for this job description -- lead with the 2-4 of the candidate's real skills/technologies most relevant to this specific job description. Do not pad or repeat the same summary across different job descriptions.
 - Structure sections in this order, including only the ones the provided facts support: Experience, Projects, Education, Skills, Languages, Certifications, Achievements.
 - For Experience/Projects/Education/Certifications: one item per role/degree/project/cert, with a concise bolded title (e.g. "Senior Engineer at Acme Corp"), an optional subtitle (dates), and the details as bullet points.
-- For Skills/Languages/Achievements: a SINGLE item per section with an empty subtitle and one bullet per skill/language/achievement (do not split these into multiple items).
+- For Skills/Languages/Achievements: a SINGLE item per section with an empty title, empty subtitle, and bullets covering every skill/language/achievement (do not repeat the section heading as the title -- the heading already labels it).
+- CRITICAL -- completeness of catalog facts: every EDUCATION, SKILL, LANGUAGE, CERTIFICATION, and ACHIEVEMENT fact given to you MUST appear in the output. Do not drop a lower-level degree because a higher one is also present (if the candidate has both a Bachelor's and a high school result, both get their own Education item). Do not drop a skill because it seems less relevant to this particular job description, less impressive, or redundant with another skill -- relevance to the JD is for wording/ordering/emphasis only, never for exclusion of these facts. Skills may be grouped into a handful of thematic bullets for readability (e.g. one bullet for languages/frameworks, one for databases, one for cloud/DevOps) but every single skill name given to you must appear somewhere in those bullets -- verify before finalizing that no skill, language, education entry, certification, or achievement from the provided facts is missing from your output.
 - If the provided facts are thin for this particular job, say so plainly in a bullet rather than padding with invented content.
 - Call the record_tailored_resume tool exactly once with the structured resume -- no commentary outside the tool call.`;
 
@@ -156,7 +157,7 @@ export class ClaudeClient {
               },
               sections: {
                 type: 'array',
-                description: 'Use headings from this set, in this order, including only ones the facts support: "Experience", "Projects", "Education", "Skills", "Languages", "Certifications", "Achievements". Experience/Projects/Education/Certifications get one item per entry. Skills/Languages/Achievements get exactly ONE item per section, subtitle null, with each skill/language/achievement as its own bullet.',
+                description: 'Use headings from this set, in this order, including only ones the facts support: "Experience", "Projects", "Education", "Skills", "Languages", "Certifications", "Achievements". Experience/Projects/Education/Certifications get one item per entry -- EVERY education/certification fact given to you must get its own item, never dropped for being lower-level than another. Skills/Languages/Achievements get exactly ONE item per section, with an empty string title, subtitle null, and bullets grouping the facts -- EVERY skill/language/achievement fact given to you must appear in some bullet, with zero omissions regardless of JD relevance.',
                 items: {
                   type: 'object',
                   properties: {
@@ -166,7 +167,7 @@ export class ClaudeClient {
                       items: {
                         type: 'object',
                         properties: {
-                          title: { type: 'string', description: 'e.g. "Senior Engineer at Acme Corp" for Experience; for Skills/Languages/Achievements sections, repeat the heading name.' },
+                          title: { type: 'string', description: 'e.g. "Senior Engineer at Acme Corp" for Experience; for Skills/Languages/Achievements sections, an empty string ("") -- the section heading already labels it, do not repeat it here.' },
                           subtitle: { type: ['string', 'null'], description: 'e.g. dates. Null if not applicable.' },
                           bullets: { type: 'array', items: { type: 'string' } },
                         },

@@ -5,6 +5,16 @@ import type { ResumeDocument } from '../llm/claude.client.js';
 // visually matches the on-screen preview.
 const ACCENT_COLOR = '#6D28D9';
 
+// Skills/Languages/Achievements items carry an empty title today, but
+// older stored generations put the section heading itself in there --
+// skip it either way rather than printing the heading twice.
+function hasOwnItemTitle(
+  item: { title: string },
+  section: { heading: string },
+): boolean {
+  return Boolean(item.title) && item.title.trim().toLowerCase() !== section.heading.trim().toLowerCase();
+}
+
 export function buildPdf(doc: ResumeDocument): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const pdf = new PDFDocument({ margin: 50 });
@@ -37,8 +47,10 @@ export function buildPdf(doc: ResumeDocument): Promise<Buffer> {
 
       for (const item of section.items) {
         pdf.moveDown(0.4);
-        const header = item.subtitle ? `${item.title} — ${item.subtitle}` : item.title;
-        pdf.fontSize(11).font('Helvetica-Bold').text(header);
+        if (hasOwnItemTitle(item, section)) {
+          const header = item.subtitle ? `${item.title} — ${item.subtitle}` : item.title;
+          pdf.fontSize(11).font('Helvetica-Bold').text(header);
+        }
         pdf.font('Helvetica').fontSize(10);
         for (const bullet of item.bullets) {
           pdf.text(`•  ${bullet}`, { indent: 14 });

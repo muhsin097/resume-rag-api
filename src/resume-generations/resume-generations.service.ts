@@ -30,13 +30,23 @@ const RANKED_TYPES: ExperienceType[] = [
 // analyzeMatch input, and the display fallback for rows predating
 // structuredContent) derived from the same structured data rather than a
 // second, possibly-divergent generation.
+// Skills/Languages/Achievements items carry an empty title today, but
+// older stored generations put the section heading itself in there
+// (e.g. title "Skills" under a "SKILLS" heading) -- skip it either way
+// rather than printing the heading twice.
+function hasOwnItemTitle(item: { title: string }, section: { heading: string }): boolean {
+  return Boolean(item.title) && item.title.trim().toLowerCase() !== section.heading.trim().toLowerCase();
+}
+
 function flattenResumeDocument(doc: ResumeDocument): string {
   const lines = doc.title ? [doc.name, doc.title, doc.contactLine] : [doc.name, doc.contactLine];
   if (doc.summary) lines.push('', doc.summary);
   for (const section of doc.sections) {
     lines.push('', section.heading.toUpperCase());
     for (const item of section.items) {
-      lines.push(item.subtitle ? `${item.title} -- ${item.subtitle}` : item.title);
+      if (hasOwnItemTitle(item, section)) {
+        lines.push(item.subtitle ? `${item.title} -- ${item.subtitle}` : item.title);
+      }
       for (const bullet of item.bullets) {
         lines.push(`- ${bullet}`);
       }

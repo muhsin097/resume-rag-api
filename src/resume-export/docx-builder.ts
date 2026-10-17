@@ -6,6 +6,16 @@ import type { ResumeDocument } from '../llm/claude.client.js';
 const ACCENT_COLOR = '6D28D9';
 const FONT = 'Calibri';
 
+// Skills/Languages/Achievements items carry an empty title today, but
+// older stored generations put the section heading itself in there --
+// skip it either way rather than printing the heading twice.
+function hasOwnItemTitle(
+  item: { title: string },
+  section: { heading: string },
+): boolean {
+  return Boolean(item.title) && item.title.trim().toLowerCase() !== section.heading.trim().toLowerCase();
+}
+
 export function buildDocx(doc: ResumeDocument): Promise<Buffer> {
   const children: Paragraph[] = [
     new Paragraph({
@@ -52,12 +62,14 @@ export function buildDocx(doc: ResumeDocument): Promise<Buffer> {
       }),
     );
     for (const item of section.items) {
-      const header = item.subtitle ? `${item.title} — ${item.subtitle}` : item.title;
-      children.push(
-        new Paragraph({
-          children: [new TextRun({ text: header, bold: true, font: FONT })],
-        }),
-      );
+      if (hasOwnItemTitle(item, section)) {
+        const header = item.subtitle ? `${item.title} — ${item.subtitle}` : item.title;
+        children.push(
+          new Paragraph({
+            children: [new TextRun({ text: header, bold: true, font: FONT })],
+          }),
+        );
+      }
       for (const bullet of item.bullets) {
         children.push(
           new Paragraph({
