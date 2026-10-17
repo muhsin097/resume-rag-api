@@ -93,14 +93,25 @@ export function buildDocx(doc: ResumeDocument): Promise<Buffer> {
           );
         }
       }
-      for (const bullet of item.bullets) {
+      if (section.heading === 'Skills' && item.bullets.length > 0) {
+        // One combined, comma-separated line rather than a bullet per
+        // skill -- wraps naturally no matter how many/long the skills are.
         children.push(
           new Paragraph({
-            bullet: { level: 0 },
             spacing: { after: 40, ...LINE_SPACING },
-            children: [new TextRun({ text: bullet, size: 22, font: BODY_FONT })],
+            children: [new TextRun({ text: item.bullets.join(', '), size: 22, font: BODY_FONT })],
           }),
         );
+      } else {
+        for (const bullet of item.bullets) {
+          children.push(
+            new Paragraph({
+              bullet: { level: 0 },
+              spacing: { after: 40, ...LINE_SPACING },
+              children: [new TextRun({ text: bullet, size: 22, font: BODY_FONT })],
+            }),
+          );
+        }
       }
     }
   }

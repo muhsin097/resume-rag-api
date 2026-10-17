@@ -68,8 +68,14 @@ export function buildPdf(doc: ResumeDocument): Promise<Buffer> {
           }
         }
         pdf.font(BODY_FONT).fontSize(10);
-        for (const bullet of item.bullets) {
-          pdf.text(`•  ${bullet}`, { indent: 14, lineGap: 2 });
+        if (section.heading === 'Skills' && item.bullets.length > 0) {
+          // One combined, comma-separated line rather than a bullet per
+          // skill -- wraps naturally no matter how many/long the skills are.
+          pdf.text(item.bullets.join(', '), { lineGap: 2 });
+        } else {
+          for (const bullet of item.bullets) {
+            pdf.text(`•  ${bullet}`, { indent: 14, lineGap: 2 });
+          }
         }
       }
     }

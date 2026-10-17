@@ -53,8 +53,12 @@ function flattenResumeDocument(doc: ResumeDocument): string {
       if (hasOwnItemTitle(item, section)) {
         lines.push(item.subtitle ? `${item.title} -- ${item.subtitle}` : item.title);
       }
-      for (const bullet of item.bullets) {
-        lines.push(`- ${bullet}`);
+      if (section.heading === 'Skills' && item.bullets.length > 0) {
+        lines.push(item.bullets.join(', '));
+      } else {
+        for (const bullet of item.bullets) {
+          lines.push(`- ${bullet}`);
+        }
       }
     }
   }
