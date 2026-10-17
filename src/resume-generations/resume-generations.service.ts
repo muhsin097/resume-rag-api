@@ -7,13 +7,10 @@ import type { ResumeDocument } from '../llm/claude.client.js';
 import { CreateResumeGenerationDto } from './dto/create-resume-generation.dto.js';
 import { ExperienceType } from '../generated/prisma/enums.js';
 
-const RETRIEVAL_TOP_K = 8;
-
 // Skills, languages, education, certifications, and achievements are
 // comprehensive lists a candidate wants shown in full every time -- not
 // trimmed by semantic distance to one JD the way experience/project
-// bullets are. Only EXPERIENCE/PROJECT compete for the top-K relevance
-// slots below.
+// bullets are.
 const CATALOG_TYPES: ExperienceType[] = [
   ExperienceType.EDUCATION,
   ExperienceType.SKILL,
@@ -21,10 +18,16 @@ const CATALOG_TYPES: ExperienceType[] = [
   ExperienceType.CERTIFICATION,
   ExperienceType.ACHIEVEMENT,
 ];
-const RANKED_TYPES: ExperienceType[] = [
-  ExperienceType.EXPERIENCE,
-  ExperienceType.PROJECT,
-];
+// EXPERIENCE and PROJECT each get their own top-K budget, retrieved
+// separately -- they used to share a single pool, which meant a candidate
+// with several jobs and several projects would have projects crowded out
+// entirely (e.g. 4 experience + 8 projects competing for one shared top-8
+// left only 4 project slots, dropping half of them even though all were
+// relevant). Separate budgets mean neither type can starve the other.
+const RANKED_TOP_K: Partial<Record<ExperienceType, number>> = {
+  [ExperienceType.EXPERIENCE]: 8,
+  [ExperienceType.PROJECT]: 8,
+};
 
 // Deterministic, no AI call -- generatedContent stays a flat string (the
 // analyzeMatch input, and the display fallback for rows predating
@@ -78,17 +81,18 @@ export class ResumeGenerationsService {
       );
     }
 
-    const [similar, catalogItems] = await Promise.all([
-      this.vectorService.findSimilarExperienceItems(
-        userId,
-        dto.jobDescription,
-        RETRIEVAL_TOP_K,
-        RANKED_TYPES,
+    const rankedTypeEntries = Object.entries(RANKED_TOP_K) as [ExperienceType, number][];
+    const [similarByType, catalogItems] = await Promise.all([
+      Promise.all(
+        rankedTypeEntries.map(([type, topK]) =>
+          this.vectorService.findSimilarExperienceItems(userId, dto.jobDescription, topK, [type]),
+        ),
       ),
       this.prisma.experienceItem.findMany({
         where: { userId, type: { in: CATALOG_TYPES } },
       }),
     ]);
+    const similar = similarByType.flat();
     if (similar.length === 0 && catalogItems.length === 0) {
       throw new ForbiddenException(
         'Add some experience items to your profile before generating a tailored resume.',
