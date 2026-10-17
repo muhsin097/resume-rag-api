@@ -60,21 +60,29 @@ export class VectorService {
     }
   }
 
+  // Embeds the query text ONCE so callers that need to rank several
+  // disjoint type-scoped slices of the same user's items against the same
+  // job description (e.g. EXPERIENCE and PROJECT each getting their own
+  // top-K) can reuse one vector instead of re-embedding identical text
+  // once per slice -- that used to double Voyage usage per generation and
+  // made the free-tier 3-requests/minute cap easier to hit.
+  async embedQuery(queryText: string): Promise<number[]> {
+    return this.voyageClient.embed(queryText);
+  }
+
   // Cosine distance (`<=>`) scoped to one user's own experience items --
-  // this is the retrieval half of RAG: convert the query text (a job
-  // description) to a vector, then find which of the user's own chunks are
-  // semantically closest to it.
+  // this is the retrieval half of RAG: find which of the user's own
+  // chunks are semantically closest to an already-embedded query vector.
   // `types`, when given, scopes retrieval to those ExperienceTypes --
   // used to rank only EXPERIENCE/PROJECT items by JD relevance, while
   // catalog facts (skills, languages, education, etc.) are fetched in
   // full elsewhere rather than competing for the same top-K slots.
-  async findSimilarExperienceItems(
+  async findSimilarByEmbedding(
     userId: string,
-    queryText: string,
+    embedding: number[],
     limit = 8,
     types?: string[],
   ): Promise<SimilarExperienceItem[]> {
-    const embedding = await this.voyageClient.embed(queryText);
     const vectorLiteral = toVectorLiteral(embedding);
 
     if (types && types.length > 0) {
@@ -96,6 +104,18 @@ export class VectorService {
       ORDER BY distance ASC
       LIMIT ${limit}
     `;
+  }
+
+  // Convenience wrapper for the (still common) single-query-single-slice
+  // case -- embeds then delegates to findSimilarByEmbedding.
+  async findSimilarExperienceItems(
+    userId: string,
+    queryText: string,
+    limit = 8,
+    types?: string[],
+  ): Promise<SimilarExperienceItem[]> {
+    const embedding = await this.embedQuery(queryText);
+    return this.findSimilarByEmbedding(userId, embedding, limit, types);
   }
 
   // Same cosine-distance retrieval as above, but aggregated across *all*

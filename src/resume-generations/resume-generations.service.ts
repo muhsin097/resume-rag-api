@@ -82,16 +82,20 @@ export class ResumeGenerationsService {
     }
 
     const rankedTypeEntries = Object.entries(RANKED_TOP_K) as [ExperienceType, number][];
-    const [similarByType, catalogItems] = await Promise.all([
-      Promise.all(
-        rankedTypeEntries.map(([type, topK]) =>
-          this.vectorService.findSimilarExperienceItems(userId, dto.jobDescription, topK, [type]),
-        ),
-      ),
+    // Embed the JD once and reuse it for every ranked type's query, rather
+    // than re-embedding the identical text per type (which doubled Voyage
+    // usage once EXPERIENCE/PROJECT got split into separate top-K calls).
+    const [queryEmbedding, catalogItems] = await Promise.all([
+      this.vectorService.embedQuery(dto.jobDescription),
       this.prisma.experienceItem.findMany({
         where: { userId, type: { in: CATALOG_TYPES } },
       }),
     ]);
+    const similarByType = await Promise.all(
+      rankedTypeEntries.map(([type, topK]) =>
+        this.vectorService.findSimilarByEmbedding(userId, queryEmbedding, topK, [type]),
+      ),
+    );
     const similar = similarByType.flat();
     if (similar.length === 0 && catalogItems.length === 0) {
       throw new ForbiddenException(
