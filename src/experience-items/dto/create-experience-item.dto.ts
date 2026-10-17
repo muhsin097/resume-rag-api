@@ -1,5 +1,5 @@
 import { IsDateString, IsEnum, IsOptional, IsString, MinLength } from 'class-validator';
-import { ExperienceType } from '../../generated/prisma/enums.js';
+import { ExperienceType, DatePrecision } from '../../generated/prisma/enums.js';
 
 export class CreateExperienceItemDto {
   @IsEnum(ExperienceType)
@@ -24,4 +24,12 @@ export class CreateExperienceItemDto {
   @IsOptional()
   @IsDateString()
   endDate?: string;
+
+  @IsOptional()
+  @IsEnum(DatePrecision)
+  startDatePrecision?: DatePrecision;
+
+  @IsOptional()
+  @IsEnum(DatePrecision)
+  endDatePrecision?: DatePrecision;
 }

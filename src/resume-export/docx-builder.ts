@@ -75,13 +75,23 @@ export function buildDocx(doc: ResumeDocument): Promise<Buffer> {
     );
     for (const item of section.items) {
       if (hasOwnItemTitle(item, section)) {
-        const header = item.subtitle ? `${item.title} — ${item.subtitle}` : item.title;
+        // Dates get their own line rather than being appended after the
+        // title -- a long job/degree title plus a date range on one line
+        // wraps awkwardly, especially in the narrower page margins.
         children.push(
           new Paragraph({
-            spacing: { after: 40, ...LINE_SPACING },
-            children: [new TextRun({ text: header, bold: true, size: 22, font: BODY_FONT })],
+            spacing: { after: item.subtitle ? 0 : 40, ...LINE_SPACING },
+            children: [new TextRun({ text: item.title, bold: true, size: 22, font: BODY_FONT })],
           }),
         );
+        if (item.subtitle) {
+          children.push(
+            new Paragraph({
+              spacing: { after: 40, ...LINE_SPACING },
+              children: [new TextRun({ text: item.subtitle, color: '666666', size: 18, font: BODY_FONT })],
+            }),
+          );
+        }
       }
       for (const bullet of item.bullets) {
         children.push(

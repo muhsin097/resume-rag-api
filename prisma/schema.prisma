@@ -27,6 +27,17 @@ enum ExperienceType {
   LANGUAGE
 }
 
+// How much of startDate/endDate is actually known -- a DateTime column
+// always has a day, but a resume import's source might only have said
+// "2015" or "Jan 2015". Without this, a year-only date silently rendered
+// as "Jan 2015" looks like an invented month. Null means DAY (the
+// default -- manual entry via the date picker always gives a full date).
+enum DatePrecision {
+  YEAR
+  MONTH
+  DAY
+}
+
 model User {
   id                  String             @id @default(uuid())
   email               String             @unique
@@ -63,6 +74,8 @@ model ExperienceItem {
   description String?          @db.Text
   startDate    DateTime?        @map("start_date")
   endDate      DateTime?        @map("end_date")
+  startDatePrecision DatePrecision? @map("start_date_precision")
+  endDatePrecision   DatePrecision? @map("end_date_precision")
   // Normalized text actually sent to the embedding model -- derived from the fields above.
   content      String           @db.Text
   createdAt    DateTime         @default(now()) @map("created_at")

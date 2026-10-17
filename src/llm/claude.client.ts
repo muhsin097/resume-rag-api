@@ -2,12 +2,16 @@ import Anthropic from '@anthropic-ai/sdk';
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
+export type DatePrecision = 'YEAR' | 'MONTH' | 'DAY';
+
 export interface ExperienceFact {
   title: string;
   organization?: string | null;
   content: string;
   startDate?: Date | string | null;
   endDate?: Date | string | null;
+  startDatePrecision?: DatePrecision | null;
+  endDatePrecision?: DatePrecision | null;
 }
 
 // Without this, Claude has no way to know which EXPERIENCE/EDUCATION fact
@@ -15,19 +19,39 @@ export interface ExperienceFact {
 // the model would otherwise guess at ordering (or just preserve retrieval
 // order) instead of putting the current/most recent role first like a
 // real resume does.
+//
+// Precision matters here too: a date stored with only a year known (e.g.
+// a resume import that only said "2015") still needs a real DateTime for
+// sorting, so it's stored as Jan 1 -- but displaying that as "Jan 2015"
+// invents a month the source never gave. YEAR precision formats as just
+// the year; MONTH/DAY (or no precision recorded, e.g. manually-entered
+// dates) format as "Mon YYYY".
 function formatDateRange(
   start?: Date | string | null,
   end?: Date | string | null,
+  startPrecision?: DatePrecision | null,
+  endPrecision?: DatePrecision | null,
 ): string | null {
   if (!start) return null;
-  const startStr = formatYearMonth(start);
-  const endStr = end ? formatYearMonth(end) : 'Present';
-  return `${startStr} to ${endStr}`;
+  const startStr = formatByPrecision(start, startPrecision);
+  const endStr = end ? formatByPrecision(end, endPrecision) : 'Present';
+  return `${startStr} – ${endStr}`;
 }
 
-function formatYearMonth(value: Date | string): string {
+const MONTH_NAMES = [
+  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+];
+
+// "Jan 2018", not "2018-01" -- a raw ISO month looks like a database
+// value on a resume. Claude is told to reuse this exact formatting in
+// the subtitle it produces, not re-derive its own.
+function formatByPrecision(value: Date | string, precision?: DatePrecision | null): string {
   const date = typeof value === 'string' ? new Date(value) : value;
-  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`;
+  if (precision === 'YEAR') {
+    return `${date.getUTCFullYear()}`;
+  }
+  return `${MONTH_NAMES[date.getUTCMonth()]} ${date.getUTCFullYear()}`;
 }
 
 export const EXTRACTABLE_TYPES = [
@@ -47,6 +71,8 @@ export interface ExtractedExperienceItem {
   description?: string | null;
   startDate?: string | null;
   endDate?: string | null;
+  startDatePrecision?: DatePrecision | null;
+  endDatePrecision?: DatePrecision | null;
 }
 
 export interface ExtractedContactInfo {
@@ -99,8 +125,12 @@ Hard rules:
 - This resume must be a FRESH rewrite tailored to THIS job description, not a generic restatement. Pull specific keywords, technologies, and phrasing straight from the job description wherever a provided fact genuinely supports it, so two generations against two different job descriptions for the same candidate read differently -- in which facts are emphasized, which keywords surface in the bullets, and the summary's wording.
 - The "title" is a short professional title (e.g. "Senior Backend Developer", "Full Stack Engineer") that appears directly under the candidate's name. Infer it from the candidate's real experience (their most senior/recent relevant role type), but angle the wording toward how this job description frames the role when the facts genuinely support it (e.g. "Backend Engineer" vs "Full Stack Developer" depending on which the candidate's real skills best match for this JD). Do not invent a title the candidate's experience doesn't support. Null only if there are no EXPERIENCE/PROJECT facts to infer one from.
 - The "summary" is a short (max 2 sentences) professional summary, written fresh for this job description -- lead with the 2-4 of the candidate's real skills/technologies most relevant to this specific job description. Do not pad or repeat the same summary across different job descriptions.
-- Structure sections in this order, including only the ones the provided facts support: Experience, Projects, Education, Skills, Languages, Certifications, Achievements.
-- For Experience/Projects/Education/Certifications: one item per role/degree/project/cert, with a concise bolded title (e.g. "Senior Engineer at Acme Corp"), an optional subtitle (dates), and the details as bullet points. Order items within each of these sections in reverse chronological order (most recent/current first, using the date range given with each fact) -- the order facts were given to you is by JD relevance, NOT by date, so you must re-sort by date yourself rather than preserving that order. A fact with no date range given stays wherever it naturally fits.
+- Structure sections in this order, including only the ones the provided facts support: Skills, Experience, Projects, Education, Languages, Certifications, Achievements. Skills comes right after the summary, near the top -- not buried after Experience/Projects/Education.
+- For Experience/Projects/Education/Certifications: one item per role/degree/project/cert, with a concise bolded title (e.g. "Senior Engineer at Acme Corp"), an optional subtitle, and the details as bullet points. Order items within each of these sections in reverse chronological order (most recent/current first, using the date range given with each fact) -- the order facts were given to you is by JD relevance, NOT by date, so you must re-sort by date yourself rather than preserving that order. A fact with no date range given stays wherever it naturally fits.
+- Subtitle dates: copy the exact "Mon YYYY – Mon YYYY" (or "Mon YYYY – Present") format given alongside each fact verbatim into that item's subtitle -- never reformat it as "YYYY-MM" or similar, that reads like a raw database value on a resume. If a fact's date only ever showed a year (no month given), use just the year (e.g. "2015 – 2019") -- do not invent a month/day that wasn't provided.
+- Verb tense: use past tense ("Built", "Led", "Designed") for any role/project whose date range has already ended. Use present tense only for the one role with no end date (the current/ongoing position) -- never present tense for something that ended in the past, regardless of how recently.
+- No repeated facts: each real fact appears in exactly ONE place in the output. If an ACHIEVEMENT fact clearly belongs to a specific role already covered in Experience (e.g. a metric from that job), fold it into that role's bullets instead of also listing it separately under Achievements -- don't do both.
+- Be concise -- this should read as a tight 1-2 page resume, not a wall of text. 2-4 bullets per Experience/Project item is usually enough; don't restate the same point in different words to pad length.
 - For Skills/Languages/Achievements: a SINGLE item per section with an empty title, empty subtitle, and bullets covering every skill/language/achievement (do not repeat the section heading as the title -- the heading already labels it).
 - CRITICAL -- completeness of catalog facts: every EDUCATION, SKILL, LANGUAGE, CERTIFICATION, and ACHIEVEMENT fact given to you MUST appear in the output. Do not drop a lower-level degree because a higher one is also present (if the candidate has both a Bachelor's and a high school result, both get their own Education item). Do not drop a skill because it seems less relevant to this particular job description, less impressive, or redundant with another skill -- relevance to the JD is for wording/ordering/emphasis only, never for exclusion of these facts. Skills may be grouped into a handful of thematic bullets for readability (e.g. one bullet for languages/frameworks, one for databases, one for cloud/DevOps) but every single skill name given to you must appear somewhere in those bullets -- verify before finalizing that no skill, language, education entry, certification, or achievement from the provided facts is missing from your output.
 - If the provided facts are thin for this particular job, say so plainly in a bullet rather than padding with invented content.
@@ -128,6 +158,7 @@ export class ClaudeClient {
     facts: ExperienceFact[];
     candidate: {
       name: string;
+      email?: string | null;
       phone?: string | null;
       location?: string | null;
       bio?: string | null;
@@ -138,7 +169,12 @@ export class ClaudeClient {
         const header = fact.organization
           ? `${fact.title} at ${fact.organization}`
           : fact.title;
-        const dateRange = formatDateRange(fact.startDate, fact.endDate);
+        const dateRange = formatDateRange(
+          fact.startDate,
+          fact.endDate,
+          fact.startDatePrecision,
+          fact.endDatePrecision,
+        );
         const headerLine = dateRange ? `${header} (${dateRange})` : header;
         return `[Fact ${index + 1}] ${headerLine}\n${fact.content}`;
       })
@@ -148,6 +184,7 @@ export class ClaudeClient {
       params.candidate.name,
       params.candidate.location,
       params.candidate.phone,
+      params.candidate.email,
     ]
       .filter(Boolean)
       .join(' | ');
@@ -173,7 +210,7 @@ export class ClaudeClient {
               },
               contactLine: {
                 type: 'string',
-                description: 'Pipe-separated contact details, e.g. "San Francisco, CA | 555-1234".',
+                description: 'Pipe-separated contact details from the candidate contact header given to you -- location, phone, and email when given, e.g. "San Francisco, CA | 555-1234 | jane@example.com". Include every contact detail provided, don\'t drop the email.',
               },
               summary: {
                 type: ['string', 'null'],
@@ -305,7 +342,7 @@ export class ClaudeClient {
       model: this.model,
       max_tokens: 4000,
       system:
-        'You extract structured data from resumes. Call the record_experience_items tool exactly once with the contact info/bio you can find, plus every distinct experience, education entry, certification, project, achievement, skill, and spoken/written language. For languages, use the LANGUAGE type with the title as "Language (Proficiency)" e.g. "Spanish (Fluent)" if a proficiency is stated, otherwise just the language name. Do not invent anything not present in the text.',
+        'You extract structured data from resumes. Call the record_experience_items tool exactly once with the contact info/bio you can find, plus every distinct experience, education entry, certification, project, achievement, skill, and spoken/written language. For languages, use the LANGUAGE type with the title as "Language (Proficiency)" e.g. "Spanish (Fluent)" if a proficiency is stated, otherwise just the language name. Do not invent anything not present in the text -- this includes dates: always set startDatePrecision/endDatePrecision to match exactly what the source stated (a resume that just says "2015 – 2019" for a degree is YEAR precision, not a real January date).',
       tools: [
         {
           name: EXTRACTION_TOOL_NAME,
@@ -346,12 +383,23 @@ export class ClaudeClient {
                     startDate: {
                       type: ['string', 'null'],
                       description:
-                        'ISO 8601 date (YYYY-MM-DD). Use the 1st of the month/year if only month or year is known. Omit (null) if unknown.',
+                        'ISO 8601 date (YYYY-MM-DD). If the source only gives a year or a month+year, fill in day=01 (and month=01 if only a year was given) so this is a valid date -- but set startDatePrecision accordingly so that placeholder day/month is never displayed as if it were real. Omit (null) if unknown.',
                     },
                     endDate: {
                       type: ['string', 'null'],
                       description:
-                        'Same format as startDate. Omit (null) if ongoing or unknown.',
+                        'Same format and precision handling as startDate. Omit (null) if ongoing or unknown.',
+                    },
+                    startDatePrecision: {
+                      type: ['string', 'null'],
+                      enum: ['YEAR', 'MONTH', 'DAY', null],
+                      description:
+                        'How much of startDate the source actually stated: "YEAR" if only a year was given (e.g. "2015"), "MONTH" if a month+year was given (e.g. "Jan 2015"), "DAY" if a full date was given. Null if startDate is null.',
+                    },
+                    endDatePrecision: {
+                      type: ['string', 'null'],
+                      enum: ['YEAR', 'MONTH', 'DAY', null],
+                      description: 'Same as startDatePrecision, for endDate.',
                     },
                   },
                   required: ['type', 'title'],

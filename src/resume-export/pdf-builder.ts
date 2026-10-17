@@ -58,8 +58,14 @@ export function buildPdf(doc: ResumeDocument): Promise<Buffer> {
       for (const item of section.items) {
         pdf.moveDown(0.4);
         if (hasOwnItemTitle(item, section)) {
-          const header = item.subtitle ? `${item.title} — ${item.subtitle}` : item.title;
-          pdf.font(BODY_FONT_BOLD).fontSize(11).text(header);
+          // Dates get their own line rather than appended after the title
+          // -- a long job/degree title plus a date range on one line
+          // wraps awkwardly in the page's margins.
+          pdf.font(BODY_FONT_BOLD).fontSize(11).fillColor('#000').text(item.title);
+          if (item.subtitle) {
+            pdf.font(BODY_FONT).fontSize(9).fillColor('#666666').text(item.subtitle);
+            pdf.fillColor('#000');
+          }
         }
         pdf.font(BODY_FONT).fontSize(10);
         for (const bullet of item.bullets) {

@@ -118,6 +118,7 @@ export class ResumeGenerationsService {
       facts: orderedItems,
       candidate: {
         name: user.name,
+        email: user.email,
         phone: user.phone,
         location: user.location,
         bio: user.bio,
