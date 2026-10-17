@@ -7,6 +7,7 @@ import type { ResumeDocument } from '../llm/claude.client.js';
 import { CreateResumeGenerationDto } from './dto/create-resume-generation.dto.js';
 import { ExperienceType } from '../generated/prisma/enums.js';
 import { buildDeterministicSections } from './deterministic-sections.js';
+import { ExperienceItemsService } from '../experience-items/experience-items.service.js';
 
 // Education/Skills/Languages/Certifications are built deterministically in
 // code (deterministic-sections.ts) -- they never need JD-aware rewriting,
@@ -67,6 +68,7 @@ export class ResumeGenerationsService {
     private readonly vectorService: VectorService,
     private readonly claudeClient: ClaudeClient,
     private readonly configService: ConfigService,
+    private readonly experienceItemsService: ExperienceItemsService,
   ) {}
 
   async generate(userId: string, dto: CreateResumeGenerationDto) {
@@ -87,7 +89,7 @@ export class ResumeGenerationsService {
     // Embed the JD once and reuse it for every ranked type's query, rather
     // than re-embedding the identical text per type (which doubled Voyage
     // usage once EXPERIENCE/PROJECT got split into separate top-K calls).
-    const [queryEmbedding, deterministicItems, achievementItems] = await Promise.all([
+    const [queryEmbedding, rawDeterministicItems, achievementItems] = await Promise.all([
       this.vectorService.embedQuery(dto.jobDescription),
       this.prisma.experienceItem.findMany({
         where: { userId, type: { in: DETERMINISTIC_TYPES } },
@@ -102,7 +104,7 @@ export class ResumeGenerationsService {
       ),
     );
     const similar = similarByType.flat();
-    if (similar.length === 0 && deterministicItems.length === 0 && achievementItems.length === 0) {
+    if (similar.length === 0 && rawDeterministicItems.length === 0 && achievementItems.length === 0) {
       throw new ForbiddenException(
         'Add some experience items to your profile before generating a tailored resume.',
       );
@@ -116,6 +118,48 @@ export class ResumeGenerationsService {
     const orderedRankedItems = similar
       .map((match) => rankedItems.find((item) => item.id === match.id))
       .filter((item): item is NonNullable<typeof item> => Boolean(item));
+
+    // deterministicItems is mutable: an approved "add missing keyword" request
+    // with saveToProfile=true appends a freshly-persisted SKILL row below, so
+    // it flows into buildDeterministicSections exactly like any other fact.
+    const deterministicItems = [...rawDeterministicItems];
+    const extraSkillTitles: string[] = [];
+    if (dto.requestedSkills && dto.requestedSkills.length > 0) {
+      const candidateSkills = deterministicItems
+        .filter((item) => item.type === ExperienceType.SKILL)
+        .map((item) => item.title);
+      const candidateExperienceSummary = [...orderedRankedItems, ...achievementItems]
+        .map((item) => item.content)
+        .filter((text): text is string => Boolean(text))
+        .join(' ');
+      const classifications = await this.claudeClient.classifySkillKeywords({
+        keywords: dto.requestedSkills.map((requested) => requested.keyword),
+        candidateSkills,
+        candidateExperienceSummary,
+      });
+      for (const requested of dto.requestedSkills) {
+        const classification = classifications.find(
+          (c) => c.keyword.toLowerCase() === requested.keyword.toLowerCase(),
+        );
+        if (!classification?.approved) continue;
+        const normalizedTitle = classification.normalizedTitle || requested.keyword;
+        if (requested.saveToProfile) {
+          try {
+            const created = await this.experienceItemsService.create(userId, {
+              type: ExperienceType.SKILL,
+              title: normalizedTitle,
+            });
+            deterministicItems.push(created);
+          } catch {
+            // Already exists as a SKILL fact (ConflictException from the
+            // dedupe check) -- nothing to add, carry on.
+          }
+        } else {
+          extraSkillTitles.push(normalizedTitle);
+        }
+      }
+    }
+
     // Everything considered for this generation, for provenance/debugging
     // (retrievedItemIds) -- deterministic items included even though they
     // never reach Claude, since they still end up in the final document.
@@ -137,7 +181,11 @@ export class ResumeGenerationsService {
     // after the summary, Education/Languages/Certifications after
     // Experience/Projects but before a trailing standalone Achievements
     // section (if Claude didn't fold every achievement into a role).
-    const { skills, rest } = buildDeterministicSections(deterministicItems, dto.jobDescription);
+    const { skills, rest } = buildDeterministicSections(
+      deterministicItems,
+      dto.jobDescription,
+      extraSkillTitles,
+    );
     const achievementsHeadingIndex = structuredContent.sections.findIndex(
       (s) => s.heading === 'Achievements',
     );

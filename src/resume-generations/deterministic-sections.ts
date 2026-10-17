@@ -55,8 +55,18 @@ function buildEntrySection(
 // Claude: skills that literally appear in the job description text move
 // to the front, so the most relevant ones aren't buried in a long list.
 // Plain substring matching, not an LLM call -- deterministic and free.
-function buildSkillsSection(skills: CatalogFact[], jobDescription: string): Section | null {
-  if (skills.length === 0) return null;
+//
+// extraTitles: approved keywords from the "add missing keyword" flow that
+// the candidate chose NOT to save permanently to their profile -- not a
+// real stored fact, so not in `skills`, but still belongs in this one
+// generation's Skills list. Always sorted first since they were
+// specifically requested for this JD.
+function buildSkillsSection(
+  skills: CatalogFact[],
+  jobDescription: string,
+  extraTitles: string[] = [],
+): Section | null {
+  if (skills.length === 0 && extraTitles.length === 0) return null;
   const jdLower = jobDescription.toLowerCase();
   const sorted = [...skills].sort((a, b) => {
     const aMatch = jdLower.includes(a.title.toLowerCase()) ? 0 : 1;
@@ -65,7 +75,9 @@ function buildSkillsSection(skills: CatalogFact[], jobDescription: string): Sect
   });
   return {
     heading: 'Skills',
-    items: [{ title: '', subtitle: null, bullets: sorted.map((s) => s.title) }],
+    items: [
+      { title: '', subtitle: null, bullets: [...extraTitles, ...sorted.map((s) => s.title)] },
+    ],
   };
 }
 
@@ -80,11 +92,12 @@ function buildFlatListSection(heading: string, facts: CatalogFact[]): Section | 
 export function buildDeterministicSections(
   catalogItems: CatalogFact[],
   jobDescription: string,
+  extraSkillTitles: string[] = [],
 ): { skills: Section | null; rest: Section[] } {
   const byType = (type: string) => catalogItems.filter((item) => item.type === type);
 
   return {
-    skills: buildSkillsSection(byType('SKILL'), jobDescription),
+    skills: buildSkillsSection(byType('SKILL'), jobDescription, extraSkillTitles),
     rest: [
       buildEntrySection('Education', byType('EDUCATION')),
       buildFlatListSection('Languages', byType('LANGUAGE')),

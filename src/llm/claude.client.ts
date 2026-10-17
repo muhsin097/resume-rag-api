@@ -49,12 +49,19 @@ export interface ExtractedResumeData {
 
 const EXTRACTION_TOOL_NAME = 'record_experience_items';
 const ANALYSIS_TOOL_NAME = 'record_match_analysis';
+const SKILL_CLASSIFICATION_TOOL_NAME = 'record_skill_classifications';
 const GENERATION_TOOL_NAME = 'record_tailored_resume';
 
 export interface MatchAnalysis {
   matchScore: number;
   matchedKeywords: string[];
   missingKeywords: string[];
+}
+
+export interface SkillClassification {
+  keyword: string;
+  approved: boolean;
+  normalizedTitle: string;
 }
 
 // Structured instead of a markdown blob specifically so it can be rendered
@@ -299,6 +306,71 @@ export class ClaudeClient {
       matchedKeywords: input.matchedKeywords ?? [],
       missingKeywords: input.missingKeywords ?? [],
     };
+  }
+
+  // Lets a candidate request specific missing JD keywords be added to
+  // their Skills list (the "+" button on a red/missing keyword). This is
+  // a narrow classification call, NOT a resume generation -- it never
+  // touches Experience/Summary, so there's no risk of a rejected or
+  // approved keyword leaking into fabricated experience claims. Approved
+  // keywords are spliced into the deterministic Skills list (and
+  // optionally persisted as a real SKILL fact) by the caller; this method
+  // only decides yes/no per keyword.
+  async classifySkillKeywords(params: {
+    keywords: string[];
+    candidateSkills: string[];
+    candidateExperienceSummary: string;
+  }): Promise<SkillClassification[]> {
+    if (params.keywords.length === 0) return [];
+
+    const response = await this.client.messages.create({
+      model: this.model,
+      max_tokens: 1024,
+      system:
+        'You decide whether a candidate may honestly add a requested keyword to their Skills list, given their real skills and experience. Approve a keyword only if it is a genuine, plausible extension of their real skill set -- a closely related technology, framework, tool, or a reasonable specialization of something they already have evidence of (e.g. they know Node.js and ask to add "Express.js" -- plausible). Reject anything unrelated to their actual background (e.g. a backend engineer asking to add "cooking" or "graphic design") or that isn\'t really a skill/technology at all. When in doubt, reject -- the candidate can always add it to their profile directly if it\'s genuinely true. Call the record_skill_classifications tool exactly once.',
+      tools: [
+        {
+          name: SKILL_CLASSIFICATION_TOOL_NAME,
+          description: 'Record yes/no for each requested keyword',
+          input_schema: {
+            type: 'object',
+            properties: {
+              classifications: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    keyword: { type: 'string', description: 'Exactly the keyword as given.' },
+                    approved: { type: 'boolean' },
+                    normalizedTitle: {
+                      type: 'string',
+                      description: 'Clean skill name to store if approved, e.g. "C++" not "c plus plus". Same as keyword if already clean.',
+                    },
+                  },
+                  required: ['keyword', 'approved', 'normalizedTitle'],
+                },
+              },
+            },
+            required: ['classifications'],
+          },
+        },
+      ],
+      tool_choice: { type: 'tool', name: SKILL_CLASSIFICATION_TOOL_NAME },
+      messages: [
+        {
+          role: 'user',
+          content: `Candidate's real skills: ${params.candidateSkills.join(', ') || '(none listed)'}\n\nCandidate's experience summary: ${params.candidateExperienceSummary || '(none)'}\n\nRequested keywords to classify: ${params.keywords.join(', ')}`,
+        },
+      ],
+    });
+
+    const toolUseBlock = response.content.find(
+      (block) => block.type === 'tool_use' && block.name === SKILL_CLASSIFICATION_TOOL_NAME,
+    );
+    if (toolUseBlock?.type !== 'tool_use') return [];
+
+    const input = toolUseBlock.input as { classifications?: SkillClassification[] };
+    return input.classifications ?? [];
   }
 
   // Forced tool-use rather than "please reply with JSON" -- the model has to
