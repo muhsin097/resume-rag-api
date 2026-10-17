@@ -6,9 +6,34 @@ on:
   workflow_dispatch: {}
 
 jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ghcr.io/muhsin097/resume-rag-api:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
   deploy:
+    needs: build
     runs-on: ubuntu-latest
     steps:
+      # The box only pulls the image GitHub just built and pushed -- no
+      # compiling happens on it, so the running API isn't starved of
+      # CPU/RAM by its own deploy the way an on-box `docker compose build`
+      # used to starve it.
       - name: SSH and redeploy api
         uses: appleboy/ssh-action@v1
         with:
@@ -20,6 +45,6 @@ jobs:
             cd ~/resume-rag-api
             git pull
             cd deploy
-            docker compose build api
+            docker compose pull api
             docker compose up -d
             docker compose exec -T api npx prisma migrate deploy

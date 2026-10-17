@@ -15,6 +15,12 @@ services:
       - pgdata:/var/lib/postgresql/data
 
   api:
+    # Built on GitHub Actions' own runner and pushed to GHCR -- deploys do
+    # `docker compose pull` (a lightweight download) instead of compiling
+    # on this box, so a deploy no longer starves the live API of CPU/RAM
+    # while it builds. `build: ..` is kept so local dev can still run
+    # `docker compose up --build` from source.
+    image: ghcr.io/muhsin097/resume-rag-api:latest
     build: ..
     restart: unless-stopped
     logging:
