@@ -6,6 +6,28 @@ export interface ExperienceFact {
   title: string;
   organization?: string | null;
   content: string;
+  startDate?: Date | string | null;
+  endDate?: Date | string | null;
+}
+
+// Without this, Claude has no way to know which EXPERIENCE/EDUCATION fact
+// is most recent -- retrieval order is by JD relevance, not by date, so
+// the model would otherwise guess at ordering (or just preserve retrieval
+// order) instead of putting the current/most recent role first like a
+// real resume does.
+function formatDateRange(
+  start?: Date | string | null,
+  end?: Date | string | null,
+): string | null {
+  if (!start) return null;
+  const startStr = formatYearMonth(start);
+  const endStr = end ? formatYearMonth(end) : 'Present';
+  return `${startStr} to ${endStr}`;
+}
+
+function formatYearMonth(value: Date | string): string {
+  const date = typeof value === 'string' ? new Date(value) : value;
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`;
 }
 
 export const EXTRACTABLE_TYPES = [
@@ -78,7 +100,7 @@ Hard rules:
 - The "title" is a short professional title (e.g. "Senior Backend Developer", "Full Stack Engineer") that appears directly under the candidate's name. Infer it from the candidate's real experience (their most senior/recent relevant role type), but angle the wording toward how this job description frames the role when the facts genuinely support it (e.g. "Backend Engineer" vs "Full Stack Developer" depending on which the candidate's real skills best match for this JD). Do not invent a title the candidate's experience doesn't support. Null only if there are no EXPERIENCE/PROJECT facts to infer one from.
 - The "summary" is a short (max 2 sentences) professional summary, written fresh for this job description -- lead with the 2-4 of the candidate's real skills/technologies most relevant to this specific job description. Do not pad or repeat the same summary across different job descriptions.
 - Structure sections in this order, including only the ones the provided facts support: Experience, Projects, Education, Skills, Languages, Certifications, Achievements.
-- For Experience/Projects/Education/Certifications: one item per role/degree/project/cert, with a concise bolded title (e.g. "Senior Engineer at Acme Corp"), an optional subtitle (dates), and the details as bullet points.
+- For Experience/Projects/Education/Certifications: one item per role/degree/project/cert, with a concise bolded title (e.g. "Senior Engineer at Acme Corp"), an optional subtitle (dates), and the details as bullet points. Order items within each of these sections in reverse chronological order (most recent/current first, using the date range given with each fact) -- the order facts were given to you is by JD relevance, NOT by date, so you must re-sort by date yourself rather than preserving that order. A fact with no date range given stays wherever it naturally fits.
 - For Skills/Languages/Achievements: a SINGLE item per section with an empty title, empty subtitle, and bullets covering every skill/language/achievement (do not repeat the section heading as the title -- the heading already labels it).
 - CRITICAL -- completeness of catalog facts: every EDUCATION, SKILL, LANGUAGE, CERTIFICATION, and ACHIEVEMENT fact given to you MUST appear in the output. Do not drop a lower-level degree because a higher one is also present (if the candidate has both a Bachelor's and a high school result, both get their own Education item). Do not drop a skill because it seems less relevant to this particular job description, less impressive, or redundant with another skill -- relevance to the JD is for wording/ordering/emphasis only, never for exclusion of these facts. Skills may be grouped into a handful of thematic bullets for readability (e.g. one bullet for languages/frameworks, one for databases, one for cloud/DevOps) but every single skill name given to you must appear somewhere in those bullets -- verify before finalizing that no skill, language, education entry, certification, or achievement from the provided facts is missing from your output.
 - If the provided facts are thin for this particular job, say so plainly in a bullet rather than padding with invented content.
@@ -116,7 +138,9 @@ export class ClaudeClient {
         const header = fact.organization
           ? `${fact.title} at ${fact.organization}`
           : fact.title;
-        return `[Fact ${index + 1}] ${header}\n${fact.content}`;
+        const dateRange = formatDateRange(fact.startDate, fact.endDate);
+        const headerLine = dateRange ? `${header} (${dateRange})` : header;
+        return `[Fact ${index + 1}] ${headerLine}\n${fact.content}`;
       })
       .join('\n\n');
 

@@ -4,6 +4,15 @@ import type { ResumeDocument } from '../llm/claude.client.js';
 // Matches the web app's --accent brand color, so the downloaded file
 // visually matches the on-screen preview.
 const ACCENT_COLOR = '#6D28D9';
+// pdfkit only ships the 14 standard PDF fonts (no Calibri/Cambria without
+// embedding TTFs we don't have), so headings use the sans-serif standard
+// font and body text the serif one -- same heading/body contrast as the
+// user's own reference resume's Calibri-over-Cambria pairing, just with
+// the closest built-in equivalents. Margins below are that resume's
+// actual values (1in top/bottom, 1.25in left/right).
+const HEADING_FONT = 'Helvetica-Bold';
+const BODY_FONT = 'Times-Roman';
+const BODY_FONT_BOLD = 'Times-Bold';
 
 // Skills/Languages/Achievements items carry an empty title today, but
 // older stored generations put the section heading itself in there --
@@ -17,43 +26,44 @@ function hasOwnItemTitle(
 
 export function buildPdf(doc: ResumeDocument): Promise<Buffer> {
   return new Promise((resolve, reject) => {
-    const pdf = new PDFDocument({ margin: 50 });
+    const pdf = new PDFDocument({
+      margins: { top: 72, bottom: 72, left: 90, right: 90 },
+    });
     const chunks: Buffer[] = [];
     pdf.on('data', (chunk: Buffer) => chunks.push(chunk));
     pdf.on('end', () => resolve(Buffer.concat(chunks)));
     pdf.on('error', reject);
 
-    pdf.fontSize(20).fillColor('#000').text(doc.name);
+    pdf.font(HEADING_FONT).fontSize(20).fillColor('#000').text(doc.name);
     if (doc.title) {
-      pdf.fontSize(12).font('Helvetica-Bold').fillColor(ACCENT_COLOR).text(doc.title);
-      pdf.font('Helvetica');
+      pdf.font(HEADING_FONT).fontSize(12).fillColor(ACCENT_COLOR).text(doc.title);
     }
-    pdf.fontSize(10).fillColor('#555555').text(doc.contactLine);
+    pdf.font(BODY_FONT).fontSize(10).fillColor('#555555').text(doc.contactLine);
     pdf.fillColor('#000');
 
     if (doc.summary) {
       pdf.moveDown(0.6);
-      pdf.fontSize(11).text(doc.summary);
+      pdf.font(BODY_FONT).fontSize(11).text(doc.summary, { lineGap: 2 });
     }
 
     for (const section of doc.sections) {
       pdf.moveDown(1);
       pdf
+        .font(HEADING_FONT)
         .fontSize(13)
-        .font('Helvetica-Bold')
         .fillColor(ACCENT_COLOR)
         .text(section.heading.toUpperCase());
-      pdf.font('Helvetica').fillColor('#000');
+      pdf.fillColor('#000');
 
       for (const item of section.items) {
         pdf.moveDown(0.4);
         if (hasOwnItemTitle(item, section)) {
           const header = item.subtitle ? `${item.title} — ${item.subtitle}` : item.title;
-          pdf.fontSize(11).font('Helvetica-Bold').text(header);
+          pdf.font(BODY_FONT_BOLD).fontSize(11).text(header);
         }
-        pdf.font('Helvetica').fontSize(10);
+        pdf.font(BODY_FONT).fontSize(10);
         for (const bullet of item.bullets) {
-          pdf.text(`•  ${bullet}`, { indent: 14 });
+          pdf.text(`•  ${bullet}`, { indent: 14, lineGap: 2 });
         }
       }
     }
