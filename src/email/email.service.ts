@@ -23,19 +23,35 @@ export class EmailService {
     return this.client;
   }
 
-  async sendPasswordResetEmail(to: string, resetUrl: string): Promise<void> {
-    const from =
+  private get fromAddress(): string {
+    return (
       this.configService.get<string>('RESEND_FROM_EMAIL') ??
-      'Cease to Resume <noreply@ceasetoresume.online>';
+      'Cease to Resume <noreply@ceasetoresume.online>'
+    );
+  }
 
+  async sendPasswordResetEmail(to: string, resetUrl: string): Promise<void> {
     await this.getClient().emails.send({
-      from,
+      from: this.fromAddress,
       to,
       subject: 'Reset your Cease to Resume password',
       html: `
         <p>Someone requested a password reset for this account. Click the link below to choose a new password -- this link expires in 1 hour.</p>
         <p><a href="${resetUrl}">${resetUrl}</a></p>
         <p>If you didn't request this, you can safely ignore this email -- your password hasn't been changed.</p>
+      `,
+    });
+  }
+
+  async sendVerificationEmail(to: string, code: string): Promise<void> {
+    await this.getClient().emails.send({
+      from: this.fromAddress,
+      to,
+      subject: `${code} is your Cease to Resume verification code`,
+      html: `
+        <p>Enter this code to verify your email and finish setting up your account. It expires in 10 minutes.</p>
+        <p style="font-size: 28px; font-weight: 700; letter-spacing: 4px;">${code}</p>
+        <p>If you didn't request this, you can safely ignore this email.</p>
       `,
     });
   }

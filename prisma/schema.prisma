@@ -50,6 +50,12 @@ model User {
   // token would. Cleared on successful reset or once expired/unused.
   passwordResetTokenHash String?         @unique @map("password_reset_token_hash")
   passwordResetExpiresAt DateTime?       @map("password_reset_expires_at")
+  // Null means unverified. Set immediately for Google OAuth accounts
+  // (Google already confirmed the email) and on successful OTP entry for
+  // password accounts. Login is blocked while this is null.
+  emailVerifiedAt     DateTime?          @map("email_verified_at")
+  emailVerificationCodeHash String?      @map("email_verification_code_hash")
+  emailVerificationExpiresAt DateTime?   @map("email_verification_expires_at")
   name                String
   phone               String?
   location            String?

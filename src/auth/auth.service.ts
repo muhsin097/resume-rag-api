@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   Logger,
   UnauthorizedException,
@@ -8,7 +9,7 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcrypt';
-import { randomBytes, createHash } from 'node:crypto';
+import { randomBytes, randomInt, createHash } from 'node:crypto';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { EmailService } from '../email/email.service.js';
 import { RegisterDto } from './dto/register.dto.js';
@@ -16,6 +17,15 @@ import { LoginDto } from './dto/login.dto.js';
 
 const PASSWORD_HASH_ROUNDS = 10;
 const PASSWORD_RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
+const VERIFICATION_CODE_TTL_MS = 10 * 60 * 1000;
+
+function hashCode(code: string): string {
+  return createHash('sha256').update(code).digest('hex');
+}
+
+function generateVerificationCode(): string {
+  return randomInt(0, 1_000_000).toString().padStart(6, '0');
+}
 
 @Injectable()
 export class AuthService {
@@ -40,11 +50,26 @@ export class AuthService {
     }
 
     const passwordHash = await bcrypt.hash(dto.password, PASSWORD_HASH_ROUNDS);
-    const user = await this.prisma.user.create({
-      data: { email, passwordHash, name: dto.name },
+    const code = generateVerificationCode();
+    await this.prisma.user.create({
+      data: {
+        email,
+        passwordHash,
+        name: dto.name,
+        emailVerificationCodeHash: hashCode(code),
+        emailVerificationExpiresAt: new Date(Date.now() + VERIFICATION_CODE_TTL_MS),
+      },
     });
 
-    return this.buildAuthResponse(user);
+    // No accessToken yet -- the account can't log in until the code is
+    // verified, so there's nothing to hand back but a pointer to that
+    // next step.
+    try {
+      await this.emailService.sendVerificationEmail(email, code);
+    } catch (err) {
+      this.logger.error('Failed to send verification email', err instanceof Error ? err.stack : err);
+    }
+    return { pendingVerification: true, email };
   }
 
   async login(dto: LoginDto) {
@@ -66,6 +91,10 @@ export class AuthService {
       throw new UnauthorizedException('Invalid email or password');
     }
 
+    if (!user.emailVerifiedAt) {
+      throw new ForbiddenException('Please verify your email before logging in.');
+    }
+
     return this.buildAuthResponse(user);
   }
 
@@ -75,10 +104,14 @@ export class AuthService {
   // caller to assert an arbitrary email here.
   async oauthLogin(email: string, name: string) {
     const normalizedEmail = email.toLowerCase();
+    // Google already proved this email, so it counts as verified here too
+    // -- set on both branches: `create` for a brand new account, `update`
+    // so a password account that never finished its own OTP flow still
+    // gets unblocked once it proves the same email via Google.
     const user = await this.prisma.user.upsert({
       where: { email: normalizedEmail },
-      update: {},
-      create: { email: normalizedEmail, name },
+      update: { emailVerifiedAt: new Date() },
+      create: { email: normalizedEmail, name, emailVerifiedAt: new Date() },
     });
 
     return this.buildAuthResponse(user);
@@ -135,6 +168,59 @@ export class AuthService {
       where: { id: user.id },
       data: { passwordHash, passwordResetTokenHash: null, passwordResetExpiresAt: null },
     });
+  }
+
+  // Logs the user in on success -- the code itself is the proof of
+  // identity here, the same way a Google profile is for oauthLogin, so
+  // there's nothing else to separately re-authenticate.
+  async verifyEmail(email: string, code: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { email: email.toLowerCase() },
+    });
+    if (
+      !user ||
+      !user.emailVerificationCodeHash ||
+      !user.emailVerificationExpiresAt ||
+      user.emailVerificationExpiresAt < new Date() ||
+      user.emailVerificationCodeHash !== hashCode(code)
+    ) {
+      throw new BadRequestException('That code is incorrect or has expired.');
+    }
+
+    const verified = await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        emailVerifiedAt: new Date(),
+        emailVerificationCodeHash: null,
+        emailVerificationExpiresAt: null,
+      },
+    });
+
+    return this.buildAuthResponse(verified);
+  }
+
+  // Same non-enumeration posture as requestPasswordReset -- always
+  // resolves the same way, failures logged rather than surfaced.
+  async resendVerificationCode(email: string): Promise<void> {
+    const user = await this.prisma.user.findUnique({
+      where: { email: email.toLowerCase() },
+    });
+    if (!user || user.emailVerifiedAt) return;
+
+    const code = generateVerificationCode();
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        emailVerificationCodeHash: hashCode(code),
+        emailVerificationExpiresAt: new Date(Date.now() + VERIFICATION_CODE_TTL_MS),
+      },
+    });
+
+    try {
+      await this.emailService.sendVerificationEmail(user.email, code);
+    } catch (err) {
+      this.logger.error('Failed to resend verification email', err instanceof Error ? err.stack : err);
+    }
   }
 
   private buildAuthResponse(user: {
