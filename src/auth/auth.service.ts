@@ -50,38 +50,43 @@ export class AuthService {
     }
 
     const passwordHash = await bcrypt.hash(dto.password, PASSWORD_HASH_ROUNDS);
-    const code = generateVerificationCode();
 
     if (existing) {
       // Reactivating a previously-deleted account rather than creating a
       // new one -- freeGenerationsUsed and plan are deliberately left
-      // untouched, so delete-then-re-register doesn't reset the free
-      // tier back to zero.
+      // untouched, so delete-then-re-register doesn't reset the free tier
+      // back to zero. Still goes through the OTP step like any other
+      // registration, though, and emailVerifiedAt is explicitly cleared
+      // here (deleteAccount() never touches it, so it would otherwise
+      // still hold its old value): registering also sets a brand new
+      // password, so the fact that THIS email was verified at some point
+      // in the past doesn't mean the CURRENT caller controls the mailbox
+      // right now. Skipping verification -- or leaving a stale
+      // emailVerifiedAt in place that login() would still honor -- would
+      // let anyone who merely knows a victim's email "reactivate" their
+      // old account (and inherit its plan/usage) without ever proving
+      // mailbox ownership.
       await this.prisma.user.update({
         where: { id: existing.id },
-        data: {
-          name: dto.name,
-          passwordHash,
-          deletedAt: null,
-          emailVerificationCodeHash: hashCode(code),
-          emailVerificationExpiresAt: new Date(Date.now() + VERIFICATION_CODE_TTL_MS),
-        },
+        data: { name: dto.name, passwordHash, deletedAt: null, emailVerifiedAt: null },
       });
     } else {
       await this.prisma.user.create({
-        data: {
-          email,
-          passwordHash,
-          name: dto.name,
-          emailVerificationCodeHash: hashCode(code),
-          emailVerificationExpiresAt: new Date(Date.now() + VERIFICATION_CODE_TTL_MS),
-        },
+        data: { email, passwordHash, name: dto.name },
       });
     }
 
     // No accessToken yet -- the account can't log in until the code is
     // verified, so there's nothing to hand back but a pointer to that
     // next step.
+    const code = generateVerificationCode();
+    await this.prisma.user.update({
+      where: { email },
+      data: {
+        emailVerificationCodeHash: hashCode(code),
+        emailVerificationExpiresAt: new Date(Date.now() + VERIFICATION_CODE_TTL_MS),
+      },
+    });
     try {
       await this.emailService.sendVerificationEmail(email, code);
     } catch (err) {

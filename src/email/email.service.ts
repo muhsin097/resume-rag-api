@@ -33,9 +33,26 @@ export class EmailService {
     );
   }
 
-  async sendPasswordResetEmail(to: string, resetUrl: string): Promise<void> {
-    await this.getClient().emails.send({
+  // The Resend SDK does NOT throw on a rejected send -- it resolves with
+  // { data, error }, error populated (e.g. an unverified "from" domain).
+  // Silently awaiting the call without checking this meant a rejection
+  // left no trace anywhere: no thrown error, nothing in our logs, just an
+  // email that never left Resend. Throwing here is what makes the
+  // existing try/catch + Logger.error at the call sites actually work.
+  private async send(params: { to: string; subject: string; html: string }): Promise<void> {
+    const { error } = await this.getClient().emails.send({
       from: this.fromAddress,
+      to: params.to,
+      subject: params.subject,
+      html: params.html,
+    });
+    if (error) {
+      throw new Error(`Resend rejected the send: [${error.name}] ${error.message}`);
+    }
+  }
+
+  async sendPasswordResetEmail(to: string, resetUrl: string): Promise<void> {
+    await this.send({
       to,
       subject: 'Reset your Cease to Resume password',
       html: `
@@ -47,8 +64,7 @@ export class EmailService {
   }
 
   async sendVerificationEmail(to: string, code: string): Promise<void> {
-    await this.getClient().emails.send({
-      from: this.fromAddress,
+    await this.send({
       to,
       subject: `${code} is your Cease to Resume verification code`,
       html: `
