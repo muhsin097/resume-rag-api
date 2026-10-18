@@ -45,6 +45,11 @@ model User {
   // password against, so login must reject those cleanly rather than
   // crash bcrypt.compare on null.
   passwordHash        String?            @map("password_hash")
+  // Hash of the reset token, not the raw token -- a DB read alone
+  // shouldn't be enough to take over an account the way a leaked raw
+  // token would. Cleared on successful reset or once expired/unused.
+  passwordResetTokenHash String?         @unique @map("password_reset_token_hash")
+  passwordResetExpiresAt DateTime?       @map("password_reset_expires_at")
   name                String
   phone               String?
   location            String?

@@ -1,21 +1,31 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
   UnauthorizedException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
+import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcrypt';
+import { randomBytes, createHash } from 'node:crypto';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { EmailService } from '../email/email.service.js';
 import { RegisterDto } from './dto/register.dto.js';
 import { LoginDto } from './dto/login.dto.js';
 
 const PASSWORD_HASH_ROUNDS = 10;
+const PASSWORD_RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
+    private readonly configService: ConfigService,
+    private readonly emailService: EmailService,
   ) {}
 
   async register(dto: RegisterDto) {
@@ -72,6 +82,59 @@ export class AuthService {
     });
 
     return this.buildAuthResponse(user);
+  }
+
+  // Always resolves the same way whether or not the account exists, or
+  // whether it even has a password to reset (Google-only accounts don't)
+  // -- otherwise this endpoint becomes an oracle for which emails have an
+  // account here.
+  async requestPasswordReset(email: string): Promise<void> {
+    const user = await this.prisma.user.findUnique({
+      where: { email: email.toLowerCase() },
+    });
+    if (!user || !user.passwordHash) return;
+
+    const rawToken = randomBytes(32).toString('hex');
+    const tokenHash = createHash('sha256').update(rawToken).digest('hex');
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        passwordResetTokenHash: tokenHash,
+        passwordResetExpiresAt: new Date(Date.now() + PASSWORD_RESET_TOKEN_TTL_MS),
+      },
+    });
+
+    const webOrigin = this.configService.get<string>('WEB_ORIGIN') ?? 'https://ceasetoresume.online';
+    const resetUrl = `${webOrigin}/reset-password?token=${rawToken}`;
+    try {
+      await this.emailService.sendPasswordResetEmail(user.email, resetUrl);
+    } catch (err) {
+      // Swallowed on purpose: this method must behave identically whether
+      // the account exists or not, so a misconfigured key or a provider
+      // outage can't become a second account-enumeration oracle (existing
+      // accounts 500ing while nonexistent ones 201). Logged so a real
+      // delivery failure is still visible to us, just not to the caller.
+      this.logger.error('Failed to send password reset email', err instanceof Error ? err.stack : err);
+    }
+  }
+
+  async resetPassword(token: string, newPassword: string): Promise<void> {
+    const tokenHash = createHash('sha256').update(token).digest('hex');
+    const user = await this.prisma.user.findFirst({
+      where: {
+        passwordResetTokenHash: tokenHash,
+        passwordResetExpiresAt: { gt: new Date() },
+      },
+    });
+    if (!user) {
+      throw new BadRequestException('This reset link is invalid or has expired.');
+    }
+
+    const passwordHash = await bcrypt.hash(newPassword, PASSWORD_HASH_ROUNDS);
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: { passwordHash, passwordResetTokenHash: null, passwordResetExpiresAt: null },
+    });
   }
 
   private buildAuthResponse(user: {
