@@ -20,4 +20,16 @@ export class UpdateUserDto {
   @IsOptional()
   @IsString()
   bio?: string;
+
+  @IsOptional()
+  @IsString()
+  linkedinUrl?: string;
+
+  @IsOptional()
+  @IsString()
+  githubUrl?: string;
+
+  @IsOptional()
+  @IsString()
+  websiteUrl?: string;
 }

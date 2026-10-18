@@ -138,6 +138,9 @@ export class ClaudeClient {
       phone?: string | null;
       location?: string | null;
       bio?: string | null;
+      linkedinUrl?: string | null;
+      githubUrl?: string | null;
+      websiteUrl?: string | null;
     };
   }): Promise<ResumeDocument> {
     const factsBlock = params.facts
@@ -161,6 +164,9 @@ export class ClaudeClient {
       params.candidate.location,
       params.candidate.phone,
       params.candidate.email,
+      params.candidate.linkedinUrl,
+      params.candidate.githubUrl,
+      params.candidate.websiteUrl,
     ]
       .filter(Boolean)
       .join(' | ');
@@ -186,7 +192,7 @@ export class ClaudeClient {
               },
               contactLine: {
                 type: 'string',
-                description: 'Pipe-separated contact details from the candidate contact header given to you -- location, phone, and email when given, e.g. "San Francisco, CA | 555-1234 | jane@example.com". Include every contact detail provided, don\'t drop the email.',
+                description: 'Pipe-separated contact details from the candidate contact header given to you -- location, phone, email, and any LinkedIn/GitHub/website links when given, e.g. "San Francisco, CA | 555-1234 | jane@example.com | linkedin.com/in/jane". Include every contact detail provided verbatim, in the order given -- don\'t drop the email or any link, don\'t reformat the links.',
               },
               summary: {
                 type: ['string', 'null'],

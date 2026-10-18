@@ -44,6 +44,20 @@ function hasOwnItemTitle(item: { title: string }, section: { heading: string }):
   return Boolean(item.title) && item.title.trim().toLowerCase() !== section.heading.trim().toLowerCase();
 }
 
+// Safety net for analyzeMatch: on a long, dense skills line the model
+// sometimes loses track of a keyword it already saw and reports it as
+// missing anyway. Word-boundary-safe so short keywords ("AI", "Git") can't
+// false-positive inside unrelated words ("email", "digital"), and treats
+// ".", "-", "/", and whitespace as interchangeable so "CI/CD" also matches
+// "CI-CD" or "CI CD", "Node.js" also matches "Node JS", etc.
+function keywordAppearsInResume(keyword: string, resumeText: string): boolean {
+  const trimmed = keyword.trim();
+  if (!trimmed) return false;
+  const escaped = trimmed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = escaped.replace(/[\s\-/.]+/g, '[\\s\\-/.]*');
+  return new RegExp(`\\b${pattern}\\b`, 'i').test(resumeText);
+}
+
 function flattenResumeDocument(doc: ResumeDocument): string {
   const lines = doc.title ? [doc.name, doc.title, doc.contactLine] : [doc.name, doc.contactLine];
   if (doc.summary) lines.push('', doc.summary);
@@ -191,6 +205,9 @@ export class ResumeGenerationsService {
         phone: user.phone,
         location: user.location,
         bio: user.bio,
+        linkedinUrl: user.linkedinUrl,
+        githubUrl: user.githubUrl,
+        websiteUrl: user.websiteUrl,
       },
     });
 
@@ -226,6 +243,23 @@ export class ResumeGenerationsService {
       resumeContent: generatedContent,
     });
 
+    // Safety net: on a long, dense skills line (30+ comma-separated items)
+    // the model sometimes loses track of one it already saw and reports it
+    // as missing anyway -- e.g. "TypeScript" marked missing from a resume
+    // whose own Skills line contains it verbatim. A keyword that's actually
+    // present (allowing for "CI/CD" vs "CI-CD" style formatting variants)
+    // is reclassified as matched here, deterministically, rather than
+    // trusting the model's recall on every single keyword in a long list.
+    const matchedKeywords = [...analysis.matchedKeywords];
+    const missingKeywords: string[] = [];
+    for (const keyword of analysis.missingKeywords) {
+      if (keywordAppearsInResume(keyword, generatedContent)) {
+        matchedKeywords.push(keyword);
+      } else {
+        missingKeywords.push(keyword);
+      }
+    }
+
     const generation = await this.prisma.resumeGeneration.create({
       data: {
         userId,
@@ -234,8 +268,8 @@ export class ResumeGenerationsService {
         generatedContent,
         structuredContent: structuredContent as object,
         matchScore: analysis.matchScore,
-        matchedKeywords: analysis.matchedKeywords,
-        missingKeywords: analysis.missingKeywords,
+        matchedKeywords,
+        missingKeywords,
       },
     });
 

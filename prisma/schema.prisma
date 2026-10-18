@@ -49,6 +49,9 @@ model User {
   phone               String?
   location            String?
   bio                 String?            @db.Text
+  linkedinUrl         String?            @map("linkedin_url")
+  githubUrl           String?            @map("github_url")
+  websiteUrl          String?            @map("website_url")
   jobSearchEnabled    Boolean            @default(true) @map("job_search_enabled")
   plan                Plan               @default(FREE)
   freeGenerationsUsed Int                @default(0) @map("free_generations_used")
