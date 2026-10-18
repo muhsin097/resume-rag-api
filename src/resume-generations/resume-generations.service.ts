@@ -107,7 +107,9 @@ export class ResumeGenerationsService {
     // Embed the JD once and reuse it for every ranked type's query, rather
     // than re-embedding the identical text per type (which doubled Voyage
     // usage once EXPERIENCE/PROJECT got split into separate top-K calls).
-    const [queryEmbedding, rawDeterministicItems, achievementItems] = await Promise.all([
+    // jobMeta only depends on the JD text, so it runs alongside retrieval
+    // rather than as an extra sequential round-trip.
+    const [queryEmbedding, rawDeterministicItems, achievementItems, jobMeta] = await Promise.all([
       this.vectorService.embedQuery(dto.jobDescription),
       this.prisma.experienceItem.findMany({
         where: { userId, type: { in: DETERMINISTIC_TYPES } },
@@ -115,6 +117,7 @@ export class ResumeGenerationsService {
       this.prisma.experienceItem.findMany({
         where: { userId, type: ExperienceType.ACHIEVEMENT },
       }),
+      this.claudeClient.extractJobMeta(dto.jobDescription),
     ]);
     const similarByType = await Promise.all(
       rankedTypeEntries.map(([type, topK]) =>
@@ -264,6 +267,8 @@ export class ResumeGenerationsService {
       data: {
         userId,
         jobDescription: dto.jobDescription,
+        jobTitle: jobMeta.jobTitle,
+        companyName: jobMeta.companyName,
         retrievedItemIds: orderedItems.map((item) => item.id),
         generatedContent,
         structuredContent: structuredContent as object,
@@ -287,11 +292,25 @@ export class ResumeGenerationsService {
     return { ...generation, keywordResults };
   }
 
-  findAllForUser(userId: string) {
-    return this.prisma.resumeGeneration.findMany({
-      where: { userId },
-      orderBy: { createdAt: 'desc' },
-    });
+  async findAllForUser(userId: string, page = 1, limit = 10) {
+    const safePage = Math.max(1, page);
+    const safeLimit = Math.min(50, Math.max(1, limit));
+    const [items, total] = await Promise.all([
+      this.prisma.resumeGeneration.findMany({
+        where: { userId },
+        orderBy: { createdAt: 'desc' },
+        skip: (safePage - 1) * safeLimit,
+        take: safeLimit,
+      }),
+      this.prisma.resumeGeneration.count({ where: { userId } }),
+    ]);
+    return {
+      items,
+      total,
+      page: safePage,
+      limit: safeLimit,
+      totalPages: Math.max(1, Math.ceil(total / safeLimit)),
+    };
   }
 
   async findOneForUser(userId: string, id: string) {

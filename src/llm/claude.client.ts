@@ -51,6 +51,7 @@ const EXTRACTION_TOOL_NAME = 'record_experience_items';
 const ANALYSIS_TOOL_NAME = 'record_match_analysis';
 const SKILL_CLASSIFICATION_TOOL_NAME = 'record_skill_classifications';
 const GENERATION_TOOL_NAME = 'record_tailored_resume';
+const JOB_META_TOOL_NAME = 'record_job_meta';
 
 export interface MatchAnalysis {
   matchScore: number;
@@ -395,6 +396,52 @@ export class ClaudeClient {
 
     const input = toolUseBlock.input as { classifications?: SkillClassification[] };
     return input.classifications ?? [];
+  }
+
+  // Small, cheap, deterministic extraction so History can show "Senior
+  // Engineer at Acme" instead of a raw JD snippet. Only depends on the JD
+  // text, so the caller runs this in parallel with retrieval/embedding
+  // rather than after it.
+  async extractJobMeta(
+    jobDescription: string,
+  ): Promise<{ jobTitle: string | null; companyName: string | null }> {
+    const response = await this.client.messages.create({
+      model: this.model,
+      max_tokens: 200,
+      temperature: 0,
+      system:
+        'Extract the job title and company name from this job posting, if clearly stated. Use null for either one that is not clearly present -- never guess or infer a company/title that is not explicitly written. Call the record_job_meta tool exactly once.',
+      tools: [
+        {
+          name: JOB_META_TOOL_NAME,
+          description: 'Record the job title and company name extracted from a job posting',
+          input_schema: {
+            type: 'object',
+            properties: {
+              jobTitle: {
+                type: ['string', 'null'],
+                description: 'The job title as stated in the posting, e.g. "Senior Backend Engineer". Null if not clearly stated.',
+              },
+              companyName: {
+                type: ['string', 'null'],
+                description: 'The hiring company\'s name as stated in the posting. Null if not clearly stated.',
+              },
+            },
+            required: ['jobTitle', 'companyName'],
+          },
+        },
+      ],
+      tool_choice: { type: 'tool', name: JOB_META_TOOL_NAME },
+      messages: [{ role: 'user', content: jobDescription }],
+    });
+
+    const toolUseBlock = response.content.find(
+      (block) => block.type === 'tool_use' && block.name === JOB_META_TOOL_NAME,
+    );
+    if (toolUseBlock?.type !== 'tool_use') return { jobTitle: null, companyName: null };
+
+    const input = toolUseBlock.input as { jobTitle?: string | null; companyName?: string | null };
+    return { jobTitle: input.jobTitle ?? null, companyName: input.companyName ?? null };
   }
 
   // Forced tool-use rather than "please reply with JSON" -- the model has to

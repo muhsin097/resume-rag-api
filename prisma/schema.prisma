@@ -129,6 +129,11 @@ model ResumeGeneration {
   userId           String   @map("user_id")
   user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   jobDescription   String   @db.Text @map("job_description")
+  // Extracted from the JD text at generation time, so History can show
+  // "Senior Engineer at Acme" instead of a raw JD snippet. Null when the
+  // posting doesn't clearly state one (never guessed).
+  jobTitle         String?  @map("job_title")
+  companyName      String?  @map("company_name")
   retrievedItemIds Json     @map("retrieved_item_ids")
   // Flat text, derived from structuredContent -- kept as the display
   // fallback for rows created before structuredContent existed, and as

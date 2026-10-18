@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard.js';
 import { CurrentUser } from '../auth/decorators/current-user.decorator.js';
 import type { AuthenticatedUser } from '../auth/decorators/current-user.decorator.js';
@@ -21,8 +21,16 @@ export class ResumeGenerationsController {
   }
 
   @Get()
-  findAll(@CurrentUser() user: AuthenticatedUser) {
-    return this.resumeGenerationsService.findAllForUser(user.id);
+  findAll(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.resumeGenerationsService.findAllForUser(
+      user.id,
+      page ? Number(page) : undefined,
+      limit ? Number(limit) : undefined,
+    );
   }
 
   @Get(':id')
