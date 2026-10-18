@@ -128,6 +128,11 @@ export class ResumeGenerationsService {
     // it flows into buildDeterministicSections exactly like any other fact.
     const deterministicItems = [...rawDeterministicItems];
     const extraSkillTitles: string[] = [];
+    // Returned (not persisted) so the caller can tell the candidate exactly
+    // what happened to each requested keyword -- highlight what landed in
+    // the resume, and surface a clear "couldn't add" reason for the rest,
+    // rather than silently dropping rejected ones.
+    const keywordResults: { keyword: string; normalizedTitle: string; approved: boolean }[] = [];
     if (dto.requestedSkills && dto.requestedSkills.length > 0) {
       const candidateSkills = deterministicItems
         .filter((item) => item.type === ExperienceType.SKILL)
@@ -145,8 +150,16 @@ export class ResumeGenerationsService {
         const classification = classifications.find(
           (c) => c.keyword.toLowerCase() === requested.keyword.toLowerCase(),
         );
-        if (!classification?.approved) continue;
+        if (!classification?.approved) {
+          keywordResults.push({
+            keyword: requested.keyword,
+            normalizedTitle: requested.keyword,
+            approved: false,
+          });
+          continue;
+        }
         const normalizedTitle = classification.normalizedTitle || requested.keyword;
+        keywordResults.push({ keyword: requested.keyword, normalizedTitle, approved: true });
         if (requested.saveToProfile) {
           try {
             const created = await this.experienceItemsService.create(userId, {
@@ -233,7 +246,11 @@ export class ResumeGenerationsService {
       });
     }
 
-    return generation;
+    // keywordResults is request-scoped feedback, not a stored fact about
+    // the generation -- attached here rather than persisted, so a candidate
+    // viewing this same generation later (e.g. from History) doesn't see a
+    // stale "just added" callout from a request that's long since settled.
+    return { ...generation, keywordResults };
   }
 
   findAllForUser(userId: string) {

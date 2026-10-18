@@ -250,6 +250,12 @@ export class ClaudeClient {
     const response = await this.client.messages.create({
       model: this.model,
       max_tokens: 1024,
+      // Deterministic on purpose: regenerating against the exact same JD
+      // and resume should give the exact same score. At the default
+      // temperature, the model picks a different subset of "important"
+      // keywords each call, so the score swings run-to-run even with no
+      // real change to the resume -- misleading as a before/after signal.
+      temperature: 0,
       system:
         'You are an ATS (Applicant Tracking System) match analyzer. Compare a job description against a resume and call the record_match_analysis tool exactly once.',
       tools: [
@@ -326,6 +332,10 @@ export class ClaudeClient {
     const response = await this.client.messages.create({
       model: this.model,
       max_tokens: 1024,
+      // Deterministic on purpose: the same keyword against the same
+      // profile should get the same approve/reject decision every time,
+      // not flip on sampling noise.
+      temperature: 0,
       system:
         'You decide whether a candidate may honestly add a requested keyword to their Skills list, given their real skills and experience. Approve a keyword only if it is a genuine, plausible extension of their real skill set -- a closely related technology, framework, tool, or a reasonable specialization of something they already have evidence of (e.g. they know Node.js and ask to add "Express.js" -- plausible). Reject anything unrelated to their actual background (e.g. a backend engineer asking to add "cooking" or "graphic design") or that isn\'t really a skill/technology at all. When in doubt, reject -- the candidate can always add it to their profile directly if it\'s genuinely true. Call the record_skill_classifications tool exactly once.',
       tools: [
