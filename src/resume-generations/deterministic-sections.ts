@@ -105,3 +105,63 @@ export function buildDeterministicSections(
     ].filter((s): s is Section => s !== null),
   };
 }
+
+// The "download a general resume" path on the Profile page -- every
+// catalog item, verbatim, with no JD and no Claude call at all. Unlike a
+// tailored generation (which only sends Claude a JD-relevant subset of
+// Experience/Projects), this includes everything the candidate has on
+// file; tailoring down to what's relevant to a specific role is the paid,
+// JD-aware flow this deliberately isn't.
+export function buildGeneralResumeSections(catalogItems: CatalogFact[]): Section[] {
+  const byType = (type: string) => catalogItems.filter((item) => item.type === type);
+
+  return [
+    buildSkillsSection(byType('SKILL'), ''),
+    buildEntrySection('Experience', byType('EXPERIENCE')),
+    buildEntrySection('Projects', byType('PROJECT')),
+    buildEntrySection('Education', byType('EDUCATION')),
+    buildFlatListSection('Languages', byType('LANGUAGE')),
+    buildEntrySection('Certifications', byType('CERTIFICATION'), 'singleDate'),
+    buildEntrySection('Achievements', byType('ACHIEVEMENT')),
+  ].filter((s): s is Section => s !== null);
+}
+
+// title/summary have no JD to angle toward here, so they fall back to
+// plain facts rather than anything inferred: the candidate's own bio as
+// the summary, and their most recent job title (first EXPERIENCE item,
+// relying on the caller's items already being startDate-desc ordered)
+// as a reasonable generic headline.
+export function buildGeneralResumeDocument(
+  user: {
+    name: string;
+    email: string;
+    phone: string | null;
+    location: string | null;
+    bio: string | null;
+    linkedinUrl: string | null;
+    githubUrl: string | null;
+    websiteUrl: string | null;
+  },
+  catalogItems: CatalogFact[],
+): ResumeDocument {
+  const contactLine = [
+    user.location,
+    user.phone,
+    user.email,
+    user.linkedinUrl,
+    user.githubUrl,
+    user.websiteUrl,
+  ]
+    .filter(Boolean)
+    .join(' | ');
+
+  const mostRecentExperience = catalogItems.find((item) => item.type === 'EXPERIENCE');
+
+  return {
+    name: user.name,
+    title: mostRecentExperience?.title ?? null,
+    contactLine,
+    summary: user.bio,
+    sections: buildGeneralResumeSections(catalogItems),
+  };
+}

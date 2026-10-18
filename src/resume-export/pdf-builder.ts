@@ -4,15 +4,14 @@ import type { ResumeDocument } from '../llm/claude.client.js';
 // Matches the web app's --accent brand color, so the downloaded file
 // visually matches the on-screen preview.
 const ACCENT_COLOR = '#6D28D9';
-// pdfkit only ships the 14 standard PDF fonts (no Calibri/Cambria without
-// embedding TTFs we don't have), so headings use the sans-serif standard
-// font and body text the serif one -- same heading/body contrast as the
-// user's own reference resume's Calibri-over-Cambria pairing, just with
-// the closest built-in equivalents. Margins below are that resume's
-// actual values (1in top/bottom, 1.25in left/right).
+// pdfkit only ships the 14 standard PDF fonts (no Geist Sans/Poppins
+// without embedding TTFs we don't have), so this uses Helvetica throughout
+// -- the closest built-in match to the web app's own clean sans-serif
+// look, rather than the old Times-Roman serif body. Margins below match
+// the user's own reference resume (1in top/bottom, 1.25in left/right).
 const HEADING_FONT = 'Helvetica-Bold';
-const BODY_FONT = 'Times-Roman';
-const BODY_FONT_BOLD = 'Times-Bold';
+const BODY_FONT = 'Helvetica';
+const BODY_FONT_BOLD = 'Helvetica-Bold';
 
 // Skills/Languages/Achievements items carry an empty title today, but
 // older stored generations put the section heading itself in there --

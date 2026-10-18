@@ -4,11 +4,12 @@ import type { ResumeDocument } from '../llm/claude.client.js';
 // Matches the web app's --accent brand color, so the downloaded file
 // visually matches the on-screen preview.
 const ACCENT_COLOR = '6D28D9';
-// Heading/body font pairing and spacing values taken from the user's own
-// reference resume (Calibri headings over Cambria body text, 1.15 line
-// height, Letter page with 1in/1.25in margins) -- not arbitrary choices.
+// Single sans-serif family throughout (not a serif body) -- closer to the
+// clean, modern look of the web app's own Geist Sans/Poppins pairing than
+// the original Calibri/Cambria split, using a font that's universally
+// available in Word rather than embedding a custom one.
 const HEADING_FONT = 'Calibri';
-const BODY_FONT = 'Cambria';
+const BODY_FONT = 'Calibri';
 const LINE_SPACING = { line: 276, lineRule: 'auto' as const };
 
 // Skills/Languages/Achievements items carry an empty title today, but
