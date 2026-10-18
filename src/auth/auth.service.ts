@@ -45,21 +45,39 @@ export class AuthService {
     const existing = await this.prisma.user.findUnique({
       where: { email },
     });
-    if (existing) {
+    if (existing && !existing.deletedAt) {
       throw new ConflictException('An account with this email already exists');
     }
 
     const passwordHash = await bcrypt.hash(dto.password, PASSWORD_HASH_ROUNDS);
     const code = generateVerificationCode();
-    await this.prisma.user.create({
-      data: {
-        email,
-        passwordHash,
-        name: dto.name,
-        emailVerificationCodeHash: hashCode(code),
-        emailVerificationExpiresAt: new Date(Date.now() + VERIFICATION_CODE_TTL_MS),
-      },
-    });
+
+    if (existing) {
+      // Reactivating a previously-deleted account rather than creating a
+      // new one -- freeGenerationsUsed and plan are deliberately left
+      // untouched, so delete-then-re-register doesn't reset the free
+      // tier back to zero.
+      await this.prisma.user.update({
+        where: { id: existing.id },
+        data: {
+          name: dto.name,
+          passwordHash,
+          deletedAt: null,
+          emailVerificationCodeHash: hashCode(code),
+          emailVerificationExpiresAt: new Date(Date.now() + VERIFICATION_CODE_TTL_MS),
+        },
+      });
+    } else {
+      await this.prisma.user.create({
+        data: {
+          email,
+          passwordHash,
+          name: dto.name,
+          emailVerificationCodeHash: hashCode(code),
+          emailVerificationExpiresAt: new Date(Date.now() + VERIFICATION_CODE_TTL_MS),
+        },
+      });
+    }
 
     // No accessToken yet -- the account can't log in until the code is
     // verified, so there's nothing to hand back but a pointer to that
@@ -107,10 +125,13 @@ export class AuthService {
     // Google already proved this email, so it counts as verified here too
     // -- set on both branches: `create` for a brand new account, `update`
     // so a password account that never finished its own OTP flow still
-    // gets unblocked once it proves the same email via Google.
+    // gets unblocked once it proves the same email via Google. `deletedAt:
+    // null` reactivates a previously-deleted account the same way
+    // register() does -- freeGenerationsUsed stays whatever it already
+    // was, not reset.
     const user = await this.prisma.user.upsert({
       where: { email: normalizedEmail },
-      update: { emailVerifiedAt: new Date() },
+      update: { emailVerifiedAt: new Date(), deletedAt: null },
       create: { email: normalizedEmail, name, emailVerifiedAt: new Date() },
     });
 

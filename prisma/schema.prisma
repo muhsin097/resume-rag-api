@@ -70,6 +70,12 @@ model User {
   // user-facing update endpoint, only ever flipped by hand in the DB.
   isAdmin             Boolean            @default(false) @map("is_admin")
   createdAt           DateTime           @default(now()) @map("created_at")
+  // Soft delete, not a real row removal -- email and freeGenerationsUsed
+  // are deliberately kept so delete-then-re-register can't be used to
+  // farm a fresh free-generation allowance. login() is already blocked
+  // (passwordHash is cleared on delete); register() reactivates a
+  // matching deleted row instead of creating a new one when this is set.
+  deletedAt           DateTime?          @map("deleted_at")
   experienceItems     ExperienceItem[]
   resumeGenerations   ResumeGeneration[]
 
