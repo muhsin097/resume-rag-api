@@ -177,6 +177,14 @@ export class ClaudeClient {
     const response = await this.client.messages.create({
       model: this.model,
       max_tokens: 2000,
+      // Deterministic on purpose: regenerating against unchanged facts and
+      // JD should produce the same resume, not a reworded one. Without
+      // this, the match score and keyword list could shift between
+      // regenerations even with zero actual change to the candidate's
+      // data -- the analyzeMatch call is deterministic given its input,
+      // but that input (this resume's wording) wasn't, which showed up as
+      // "I regenerated and the score got worse for no reason."
+      temperature: 0,
       system: SYSTEM_PROMPT,
       tools: [
         {
@@ -263,7 +271,7 @@ export class ClaudeClient {
       // real change to the resume -- misleading as a before/after signal.
       temperature: 0,
       system:
-        'You are an ATS (Applicant Tracking System) match analyzer. Compare a job description against a resume and call the record_match_analysis tool exactly once.',
+        'You are an ATS (Applicant Tracking System) match analyzer. Compare a job description against a resume and call the record_match_analysis tool exactly once. Extract individual, atomic requirements -- a single skill, tool, technology, certification, or short qualification phrase (roughly 1-5 words) -- never a full sentence or a multi-clause requirement bundled into one entry. If a requirement sentence lists several things (e.g. "8-10 years selling Microsoft solutions across the Microsoft portfolio"), split it into separate keywords ("8-10 years of experience", "Microsoft solutions", "Microsoft portfolio") rather than keeping it as one long phrase -- a long run-on phrase will almost never literally match a resume even when the resume genuinely covers it, and inconsistent chunking between calls makes the score unstable.',
       tools: [
         {
           name: ANALYSIS_TOOL_NAME,
@@ -283,13 +291,13 @@ export class ClaudeClient {
                 type: 'array',
                 items: { type: 'string' },
                 description:
-                  'Important skills/technologies/qualifications from the job description that the resume DOES reflect (directly or via a clear synonym). Each entry must be copied verbatim as it appears in the job description text, so it can be located by exact substring match.',
+                  'Individual, atomic skills/technologies/qualifications (1-5 words each) from the job description that the resume DOES reflect (directly or via a clear synonym) -- one item per entry, never a full sentence or several requirements bundled together. Each entry must be copied verbatim as it appears in the job description text, so it can be located by exact substring match.',
               },
               missingKeywords: {
                 type: 'array',
                 items: { type: 'string' },
                 description:
-                  'Important skills/technologies/qualifications the job description asks for that the resume does NOT reflect. Each entry must be copied verbatim as it appears in the job description text. Only include things that genuinely matter for the role -- not every noun in the posting.',
+                  'Individual, atomic skills/technologies/qualifications (1-5 words each) the job description asks for that the resume does NOT reflect -- same granularity as matchedKeywords, one item per entry, never a full sentence. Each entry must be copied verbatim as it appears in the job description text. Only include things that genuinely matter for the role -- not every noun in the posting.',
               },
             },
             required: ['matchScore', 'matchedKeywords', 'missingKeywords'],
