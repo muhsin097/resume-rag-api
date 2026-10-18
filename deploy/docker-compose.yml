@@ -41,6 +41,8 @@ services:
       ANTHROPIC_MODEL: claude-haiku-4-5-20251001
       FREE_GENERATIONS_LIMIT: "5"
       RECRUITER_FREE_CREDITS_LIMIT: "3"
+      RESEND_API_KEY: ${RESEND_API_KEY}
+      RESEND_FROM_EMAIL: ${RESEND_FROM_EMAIL}
     depends_on:
       - postgres
 

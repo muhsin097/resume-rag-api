@@ -24,8 +24,11 @@ export class EmailService {
   }
 
   private get fromAddress(): string {
+    // `||`, not `??` -- docker-compose substitutes an unset .env var as
+    // literal empty string rather than omitting the key, which `??`
+    // wouldn't catch (empty string isn't null/undefined).
     return (
-      this.configService.get<string>('RESEND_FROM_EMAIL') ??
+      this.configService.get<string>('RESEND_FROM_EMAIL') ||
       'Cease to Resume <noreply@ceasetoresume.online>'
     );
   }
