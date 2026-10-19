@@ -48,4 +48,3 @@ jobs:
             cd deploy
             docker compose pull api
             docker compose up -d
-            docker compose exec -T api npx prisma migrate deploy
