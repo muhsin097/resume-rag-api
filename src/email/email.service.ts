@@ -1,9 +1,10 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Resend } from 'resend';
 
 @Injectable()
 export class EmailService {
+  private readonly logger = new Logger(EmailService.name);
   private client: Resend | null = null;
 
   constructor(private readonly configService: ConfigService) {}
@@ -40,7 +41,7 @@ export class EmailService {
   // email that never left Resend. Throwing here is what makes the
   // existing try/catch + Logger.error at the call sites actually work.
   private async send(params: { to: string; subject: string; html: string }): Promise<void> {
-    const { error } = await this.getClient().emails.send({
+    const { data, error } = await this.getClient().emails.send({
       from: this.fromAddress,
       to: params.to,
       subject: params.subject,
@@ -49,6 +50,11 @@ export class EmailService {
     if (error) {
       throw new Error(`Resend rejected the send: [${error.name}] ${error.message}`);
     }
+    // Logged on success too, not just failure -- "no error" only proves
+    // Resend *accepted* the send, not that it was actually delivered.
+    // This id is what to look up in the Resend dashboard for real
+    // delivery status (bounced, spam-flagged, etc).
+    this.logger.log(`Resend accepted send to ${params.to} (id: ${data?.id})`);
   }
 
   async sendPasswordResetEmail(to: string, resetUrl: string): Promise<void> {
