@@ -99,11 +99,16 @@ export class AuthService {
     const user = await this.prisma.user.findUnique({
       where: { email: dto.email.toLowerCase() },
     });
-    // No passwordHash means this account was created via Google OAuth --
-    // there's nothing to compare against, so reject cleanly rather than
-    // let bcrypt.compare throw on a null hash.
+    // No passwordHash covers three cases that already look identical from
+    // outside (so this message doesn't leak anything new): the email was
+    // never registered, it's a Google-only account with nothing to
+    // compare against, or it's a deleted account (deleteAccount() clears
+    // passwordHash). All three need the same next step -- there's no
+    // password-based login available for this email right now.
     if (!user || !user.passwordHash) {
-      throw new UnauthorizedException('Invalid email or password');
+      throw new UnauthorizedException(
+        "This email doesn't have a password set, or isn't registered. Try Google sign-in, or register below.",
+      );
     }
 
     const passwordMatches = await bcrypt.compare(
