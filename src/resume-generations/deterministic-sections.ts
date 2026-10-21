@@ -155,7 +155,12 @@ export function buildGeneralResumeSections(catalogItems: CatalogFact[]): Section
     buildEntrySection('Education', byType('EDUCATION')),
     buildFlatListSection('Languages', byType('LANGUAGE')),
     buildEntrySection('Certifications', byType('CERTIFICATION'), 'singleDate'),
-    buildEntrySection('Achievements', byType('ACHIEVEMENT')),
+    // Each ACHIEVEMENT fact is a standalone one-line statement with no
+    // organization -- buildEntrySection would treat its full text as a
+    // bold "title" (meant for "Role at Company" style entries), which
+    // renders every achievement as a bold heading instead of a plain
+    // bullet. A flat list, like Languages, is the right shape here.
+    buildFlatListSection('Achievements', byType('ACHIEVEMENT')),
   ].filter((s): s is Section => s !== null);
 }
 
