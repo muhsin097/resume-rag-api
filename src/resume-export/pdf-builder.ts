@@ -41,21 +41,50 @@ export function buildPdf(doc: ResumeDocument): Promise<Buffer> {
     pdf.fillColor('#000');
 
     if (doc.summary) {
-      pdf.moveDown(0.6);
-      pdf.font(BODY_FONT).fontSize(11).text(doc.summary, { lineGap: 2 });
+      pdf.moveDown(0.8);
+      pdf
+        .font(HEADING_FONT)
+        .fontSize(13)
+        .fillColor(ACCENT_COLOR)
+        .text('PROFESSIONAL SUMMARY');
+      pdf.fillColor('#000');
+      pdf.moveDown(0.3);
+      pdf.font(BODY_FONT).fontSize(11).text(doc.summary, { lineGap: 3 });
     }
 
     for (const section of doc.sections) {
-      pdf.moveDown(1);
+      pdf.moveDown(1.2);
       pdf
         .font(HEADING_FONT)
         .fontSize(13)
         .fillColor(ACCENT_COLOR)
         .text(section.heading.toUpperCase());
       pdf.fillColor('#000');
+      pdf.moveDown(0.3);
 
       for (const item of section.items) {
-        pdf.moveDown(0.4);
+        if (section.heading === 'Skills') {
+          // One category per line ("Category: skill, skill, skill") rather
+          // than a bullet per skill or one giant comma-separated line --
+          // wraps naturally regardless of length, and groups read like a
+          // normal resume Skills section. Unlabeled (no category assigned
+          // yet) items just render their list with no leading label.
+          if (item.bullets.length === 0) continue;
+          pdf.moveDown(0.3);
+          if (item.title) {
+            pdf
+              .font(BODY_FONT_BOLD)
+              .fontSize(10)
+              .fillColor('#000')
+              .text(`${item.title}: `, { continued: true, indent: 10, lineGap: 3 });
+            pdf.font(BODY_FONT).fontSize(10).text(item.bullets.join(', '), { lineGap: 3 });
+          } else {
+            pdf.font(BODY_FONT).fontSize(10).text(item.bullets.join(', '), { indent: 10, lineGap: 3 });
+          }
+          continue;
+        }
+
+        pdf.moveDown(0.5);
         if (hasOwnItemTitle(item, section)) {
           // Dates get their own line rather than appended after the title
           // -- a long job/degree title plus a date range on one line
@@ -65,16 +94,11 @@ export function buildPdf(doc: ResumeDocument): Promise<Buffer> {
             pdf.font(BODY_FONT).fontSize(9).fillColor('#666666').text(item.subtitle);
             pdf.fillColor('#000');
           }
+          pdf.moveDown(0.15);
         }
         pdf.font(BODY_FONT).fontSize(10);
-        if (section.heading === 'Skills' && item.bullets.length > 0) {
-          // One combined, comma-separated line rather than a bullet per
-          // skill -- wraps naturally no matter how many/long the skills are.
-          pdf.text(item.bullets.join(', '), { lineGap: 2 });
-        } else {
-          for (const bullet of item.bullets) {
-            pdf.text(`•  ${bullet}`, { indent: 14, lineGap: 2 });
-          }
+        for (const bullet of item.bullets) {
+          pdf.text(`•  ${bullet}`, { indent: 16, lineGap: 3 });
         }
       }
     }

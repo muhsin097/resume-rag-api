@@ -92,6 +92,12 @@ model ExperienceItem {
   title        String
   organization String?
   description String?          @db.Text
+  // Only meaningful for type SKILL -- a short resume-style grouping label
+  // ("Languages & Frameworks", "Cloud & DevOps", ...) assigned once via
+  // classifySkillCategories when the skill is first created, then reused
+  // by every export/generation. Null for every other type, and briefly
+  // null for a SKILL between creation and that classification call.
+  category     String?         @map("category")
   startDate    DateTime?        @map("start_date")
   endDate      DateTime?        @map("end_date")
   startDatePrecision DatePrecision? @map("start_date_precision")

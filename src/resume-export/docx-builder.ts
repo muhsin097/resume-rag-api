@@ -53,7 +53,21 @@ export function buildDocx(doc: ResumeDocument): Promise<Buffer> {
   if (doc.summary) {
     children.push(
       new Paragraph({
-        spacing: { after: 200, ...LINE_SPACING },
+        spacing: { before: 160, after: 80, ...LINE_SPACING },
+        children: [
+          new TextRun({
+            text: 'PROFESSIONAL SUMMARY',
+            bold: true,
+            color: ACCENT_COLOR,
+            size: 26,
+            font: HEADING_FONT,
+          }),
+        ],
+      }),
+    );
+    children.push(
+      new Paragraph({
+        spacing: { after: 240, ...LINE_SPACING },
         children: [new TextRun({ text: doc.summary, size: 22, font: BODY_FONT })],
       }),
     );
@@ -62,7 +76,7 @@ export function buildDocx(doc: ResumeDocument): Promise<Buffer> {
   for (const section of doc.sections) {
     children.push(
       new Paragraph({
-        spacing: { before: 240, after: 80, ...LINE_SPACING },
+        spacing: { before: 280, after: 120, ...LINE_SPACING },
         children: [
           new TextRun({
             text: section.heading.toUpperCase(),
@@ -75,44 +89,55 @@ export function buildDocx(doc: ResumeDocument): Promise<Buffer> {
       }),
     );
     for (const item of section.items) {
+      if (section.heading === 'Skills') {
+        // One category per line ("Category: skill, skill, skill") rather
+        // than a bullet per skill or one giant comma-separated line --
+        // wraps naturally regardless of length, and groups read like a
+        // normal resume Skills section. Unlabeled (no category assigned
+        // yet) items just render their list with no leading label.
+        if (item.bullets.length === 0) continue;
+        children.push(
+          new Paragraph({
+            spacing: { after: 100, ...LINE_SPACING },
+            indent: { left: convertInchesToTwip(0.15) },
+            children: item.title
+              ? [
+                  new TextRun({ text: `${item.title}: `, bold: true, size: 22, font: BODY_FONT }),
+                  new TextRun({ text: item.bullets.join(', '), size: 22, font: BODY_FONT }),
+                ]
+              : [new TextRun({ text: item.bullets.join(', '), size: 22, font: BODY_FONT })],
+          }),
+        );
+        continue;
+      }
       if (hasOwnItemTitle(item, section)) {
         // Dates get their own line rather than being appended after the
         // title -- a long job/degree title plus a date range on one line
         // wraps awkwardly, especially in the narrower page margins.
         children.push(
           new Paragraph({
-            spacing: { after: item.subtitle ? 0 : 40, ...LINE_SPACING },
+            spacing: { before: 120, after: item.subtitle ? 0 : 60, ...LINE_SPACING },
             children: [new TextRun({ text: item.title, bold: true, size: 22, font: BODY_FONT })],
           }),
         );
         if (item.subtitle) {
           children.push(
             new Paragraph({
-              spacing: { after: 40, ...LINE_SPACING },
+              spacing: { after: 60, ...LINE_SPACING },
               children: [new TextRun({ text: item.subtitle, color: '666666', size: 18, font: BODY_FONT })],
             }),
           );
         }
       }
-      if (section.heading === 'Skills' && item.bullets.length > 0) {
-        // One combined, comma-separated line rather than a bullet per
-        // skill -- wraps naturally no matter how many/long the skills are.
+      for (const bullet of item.bullets) {
         children.push(
           new Paragraph({
-            spacing: { after: 40, ...LINE_SPACING },
-            children: [new TextRun({ text: item.bullets.join(', '), size: 22, font: BODY_FONT })],
+            bullet: { level: 0 },
+            spacing: { after: 60, ...LINE_SPACING },
+            indent: { left: convertInchesToTwip(0.2) },
+            children: [new TextRun({ text: bullet, size: 22, font: BODY_FONT })],
           }),
         );
-      } else {
-        for (const bullet of item.bullets) {
-          children.push(
-            new Paragraph({
-              bullet: { level: 0 },
-              spacing: { after: 40, ...LINE_SPACING },
-              children: [new TextRun({ text: bullet, size: 22, font: BODY_FONT })],
-            }),
-          );
-        }
       }
     }
   }

@@ -50,6 +50,7 @@ export interface ExtractedResumeData {
 const EXTRACTION_TOOL_NAME = 'record_experience_items';
 const ANALYSIS_TOOL_NAME = 'record_match_analysis';
 const SKILL_CLASSIFICATION_TOOL_NAME = 'record_skill_classifications';
+const SKILL_CATEGORIZATION_TOOL_NAME = 'record_skill_categories';
 const GENERATION_TOOL_NAME = 'record_tailored_resume';
 const JOB_META_TOOL_NAME = 'record_job_meta';
 
@@ -66,6 +67,11 @@ export interface SkillClassification {
   keyword: string;
   approved: boolean;
   normalizedTitle: string;
+}
+
+export interface SkillCategoryAssignment {
+  skill: string;
+  category: string;
 }
 
 // Structured instead of a markdown blob specifically so it can be rendered
@@ -399,6 +405,61 @@ export class ClaudeClient {
 
     const input = toolUseBlock.input as { classifications?: SkillClassification[] };
     return input.classifications ?? [];
+  }
+
+  // Groups a candidate's skills into resume-style categories ("Languages &
+  // Frameworks", "Cloud & DevOps", ...) -- called once per skill, when it's
+  // first created (see ExperienceItemsService.createMany), with the result
+  // persisted on the row. Every export/generation afterward just reads the
+  // stored category, so this never runs on the free/no-Claude-call general
+  // resume export path, and doesn't re-run on every tailored generation
+  // either. Categories are inferred fresh from the given skill set each
+  // time rather than drawn from a fixed list, so they fit whatever domain
+  // the candidate is actually in (not forced into generic software-dev
+  // buckets for a non-engineering profile).
+  async categorizeSkills(skills: string[]): Promise<SkillCategoryAssignment[]> {
+    if (skills.length === 0) return [];
+
+    const response = await this.client.messages.create({
+      model: this.model,
+      max_tokens: 1024,
+      temperature: 0,
+      system:
+        'You group a candidate\'s resume skills into a small number of broad, natural categories, the way a well-written resume\'s "Skills" section is organized -- not a precise taxonomy. For a software engineer\'s skills, a good grouping is close to: "Languages & Frameworks" (programming languages, frontend/backend/mobile frameworks), "Backend & Architecture" (architecture patterns, messaging, APIs), "Databases", "Cloud & DevOps" (cloud providers, containers, CI/CD, infra tools), "AI & LLM" (if applicable), "Testing & Quality", "Tools & Practices" (version control, methodologies, misc tools). Adapt this to the ACTUAL skills given and to the candidate\'s actual field (a non-engineering profile gets entirely different categories) -- but always merge aggressively: a HARD MAXIMUM of 6 categories, and never create a category for just one or two skills unless there is truly no sensible broader group for it (e.g. fold a single messaging tool like Kafka into "Backend & Architecture", fold "Agile" or version control into "Tools & Practices" rather than giving each its own category). Use short, title-cased category names (2-4 words). Every input skill must appear in exactly one assignment, copied verbatim. Call the record_skill_categories tool exactly once.',
+      tools: [
+        {
+          name: SKILL_CATEGORIZATION_TOOL_NAME,
+          description: 'Record a category for each given skill',
+          input_schema: {
+            type: 'object',
+            properties: {
+              assignments: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    skill: { type: 'string', description: 'Exactly the skill as given.' },
+                    category: { type: 'string', description: 'Short, title-cased category name, e.g. "Cloud & DevOps".' },
+                  },
+                  required: ['skill', 'category'],
+                },
+              },
+            },
+            required: ['assignments'],
+          },
+        },
+      ],
+      tool_choice: { type: 'tool', name: SKILL_CATEGORIZATION_TOOL_NAME },
+      messages: [{ role: 'user', content: `Skills to categorize: ${skills.join(', ')}` }],
+    });
+
+    const toolUseBlock = response.content.find(
+      (block) => block.type === 'tool_use' && block.name === SKILL_CATEGORIZATION_TOOL_NAME,
+    );
+    if (toolUseBlock?.type !== 'tool_use') return [];
+
+    const input = toolUseBlock.input as { assignments?: SkillCategoryAssignment[] };
+    return input.assignments ?? [];
   }
 
   // Small, cheap, deterministic extraction so History can show "Senior

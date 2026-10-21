@@ -12,6 +12,9 @@ interface CatalogFact {
   endDate: Date | null;
   startDatePrecision: DatePrecision | null;
   endDatePrecision: DatePrecision | null;
+  // Only ever set for type SKILL -- see ExperienceItem.category in the
+  // Prisma schema for how/when this gets assigned.
+  category?: string | null;
 }
 
 // Education/Certifications never need JD-aware rewriting -- a degree
@@ -56,11 +59,19 @@ function buildEntrySection(
 // to the front, so the most relevant ones aren't buried in a long list.
 // Plain substring matching, not an LLM call -- deterministic and free.
 //
+// Grouped into categories (one item per category, title = category name)
+// rather than one flat comma-separated line -- category is assigned once,
+// when a skill is first created (see ExperienceItemsService), not here, so
+// this stays a pure/sync function with no Claude call of its own. A group's
+// position is its first (JD-match-sorted) skill's position, so categories
+// containing JD-relevant skills still surface first. Uncategorized skills
+// (briefly, between creation and classification, or if that call ever
+// failed) fall into an unlabeled trailing bucket rather than being dropped.
+//
 // extraTitles: approved keywords from the "add missing keyword" flow that
 // the candidate chose NOT to save permanently to their profile -- not a
-// real stored fact, so not in `skills`, but still belongs in this one
-// generation's Skills list. Always sorted first since they were
-// specifically requested for this JD.
+// real stored fact, so no category to group by. Always an unlabeled,
+// leading item, since they were specifically requested for this JD.
 function buildSkillsSection(
   skills: CatalogFact[],
   jobDescription: string,
@@ -73,12 +84,34 @@ function buildSkillsSection(
     const bMatch = jdLower.includes(b.title.toLowerCase()) ? 0 : 1;
     return aMatch - bMatch;
   });
-  return {
-    heading: 'Skills',
-    items: [
-      { title: '', subtitle: null, bullets: [...extraTitles, ...sorted.map((s) => s.title)] },
-    ],
-  };
+
+  const groups = new Map<string, string[]>();
+  for (const skill of sorted) {
+    const category = skill.category?.trim() || '';
+    const bucket = groups.get(category);
+    if (bucket) bucket.push(skill.title);
+    else groups.set(category, [skill.title]);
+  }
+
+  // Uncategorized skills (no category yet, or the classification call
+  // failed/never ran for them) are pulled out and rendered last rather
+  // than wherever they happen to fall in DB fetch order -- categorized
+  // groups first, any leftovers trailing at the bottom.
+  const uncategorized = groups.get('');
+  groups.delete('');
+
+  const items: Section['items'] = [];
+  if (extraTitles.length > 0) {
+    items.push({ title: '', subtitle: null, bullets: extraTitles });
+  }
+  for (const [category, titles] of groups) {
+    items.push({ title: category, subtitle: null, bullets: titles });
+  }
+  if (uncategorized) {
+    items.push({ title: '', subtitle: null, bullets: uncategorized });
+  }
+
+  return { heading: 'Skills', items };
 }
 
 function buildFlatListSection(heading: string, facts: CatalogFact[]): Section | null {
