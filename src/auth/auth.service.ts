@@ -53,9 +53,11 @@ export class AuthService {
 
     if (existing) {
       // Reactivating a previously-deleted account rather than creating a
-      // new one -- freeGenerationsUsed and plan are deliberately left
-      // untouched, so delete-then-re-register doesn't reset the free tier
-      // back to zero. Still goes through the OTP step like any other
+      // new one -- freeGenerationsUsed, plan, creditsBalance, and
+      // creditsExpireAt are all deliberately left untouched, so
+      // delete-then-re-register doesn't reset the free tier (or wipe out
+      // credits the person actually paid for) back to a fresh default.
+      // Still goes through the OTP step like any other
       // registration, though, and emailVerifiedAt is explicitly cleared
       // here (deleteAccount() never touches it, so it would otherwise
       // still hold its old value): registering also sets a brand new

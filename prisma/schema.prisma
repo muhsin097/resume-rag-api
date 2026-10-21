@@ -64,22 +64,90 @@ model User {
   githubUrl           String?            @map("github_url")
   websiteUrl          String?            @map("website_url")
   jobSearchEnabled    Boolean            @default(true) @map("job_search_enabled")
+  // PREMIUM is now a legacy/admin-only grandfather flag (manually set,
+  // never purchasable) that bypasses the credit balance entirely --
+  // unlimited generations, same as before this moved to prepaid packs.
+  // Every new account is FREE and metered via creditsBalance below.
   plan                Plan               @default(FREE)
+  // No longer the gate (creditsBalance is) -- kept as a historical/audit
+  // trail of lifetime generations under the old unlimited-free-tier-count
+  // model, and because the migration that introduced creditsBalance
+  // backfilled from this value.
   freeGenerationsUsed Int                @default(0) @map("free_generations_used")
+  // The actual gate for a FREE-plan user: decremented by exactly 1, as
+  // one atomic conditional UPDATE (WHERE credits_balance > 0), immediately
+  // before the Claude calls for a generation start -- never check-then-act
+  // across two separate statements, which would let two concurrent
+  // requests both pass a check against the same stale balance. Refunded
+  // (incremented back) if the generation then fails after reservation.
+  creditsBalance      Int                @default(2) @map("credits_balance")
+  // Null means "no expiry yet" (the initial free-trial credits never
+  // expire on their own). Set to now()+90d the moment a paid pack is
+  // credited, and simply overwritten (not extended) by each subsequent
+  // purchase -- one combined balance, one expiry, not per-purchase
+  // batches; a deliberate simplification over FIFO-expiring batches.
+  creditsExpireAt     DateTime?          @map("credits_expire_at")
+  // Resume import (parsing an uploaded file into profile facts) is a
+  // free onboarding utility, not a metered generation -- but with zero
+  // cap it's an unmetered Claude cost vector (nothing stopped looping
+  // the upload endpoint). Capped lifetime count, deliberately separate
+  // from creditsBalance so imports don't eat into paid generation credits.
+  resumeImportsUsed   Int                @default(0) @map("resume_imports_used")
   // Gates access to the separate admin dashboard app -- not exposed via any
   // user-facing update endpoint, only ever flipped by hand in the DB.
   isAdmin             Boolean            @default(false) @map("is_admin")
   createdAt           DateTime           @default(now()) @map("created_at")
-  // Soft delete, not a real row removal -- email and freeGenerationsUsed
-  // are deliberately kept so delete-then-re-register can't be used to
-  // farm a fresh free-generation allowance. login() is already blocked
-  // (passwordHash is cleared on delete); register() reactivates a
-  // matching deleted row instead of creating a new one when this is set.
+  // Soft delete, not a real row removal -- email, freeGenerationsUsed, and
+  // creditsBalance/creditsExpireAt are deliberately kept so delete-then-
+  // re-register can't be used to farm a fresh free-generation allowance.
+  // login() is already blocked (passwordHash is cleared on delete);
+  // register() reactivates a matching deleted row instead of creating a
+  // new one when this is set.
   deletedAt           DateTime?          @map("deleted_at")
   experienceItems     ExperienceItem[]
   resumeGenerations   ResumeGeneration[]
+  creditPurchases     CreditPurchase[]
 
   @@map("users")
+}
+
+// One row per Razorpay Order created for a credit-pack purchase -- created
+// (status PENDING) the moment the user starts checkout, before any payment
+// has actually happened, so there's always a row to reconcile the webhook
+// against. Only the webhook (server-to-server, signature-verified) ever
+// moves a row to PAID and credits the account -- the client-side checkout
+// success callback is UX feedback only, never trusted to grant credits
+// itself, since a client redirect can be spoofed without ever paying.
+model CreditPurchase {
+  id                String         @id @default(uuid())
+  userId            String         @map("user_id")
+  user              User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  pack              CreditPack
+  credits           Int
+  amountPaise       Int            @map("amount_paise")
+  razorpayOrderId   String         @unique @map("razorpay_order_id")
+  // Null until the webhook actually reports a captured payment -- a
+  // PENDING row with no payment id is a normal, expected state for an
+  // order the user started but never completed.
+  razorpayPaymentId String?        @unique @map("razorpay_payment_id")
+  status            PurchaseStatus @default(PENDING)
+  createdAt         DateTime       @default(now()) @map("created_at")
+  paidAt            DateTime?      @map("paid_at")
+
+  @@map("credit_purchases")
+  @@index([userId])
+}
+
+enum CreditPack {
+  STARTER
+  JOB_SEARCH
+  INTENSIVE
+}
+
+enum PurchaseStatus {
+  PENDING
+  PAID
+  FAILED
 }
 
 // One row per resume "fact": a job, a degree, a cert, a project, an achievement, or a skill.

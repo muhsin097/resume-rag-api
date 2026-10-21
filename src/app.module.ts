@@ -11,6 +11,7 @@ import { AdminModule } from './admin/admin.module.js';
 import { RecruiterAuthModule } from './recruiter-auth/recruiter-auth.module.js';
 import { RecruiterSearchModule } from './recruiter-search/recruiter-search.module.js';
 import { ResumeExportModule } from './resume-export/resume-export.module.js';
+import { PaymentsModule } from './payments/payments.module.js';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { ResumeExportModule } from './resume-export/resume-export.module.js';
     RecruiterAuthModule,
     RecruiterSearchModule,
     ResumeExportModule,
+    PaymentsModule,
   ],
 })
 export class AppModule {}

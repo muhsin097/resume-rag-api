@@ -15,6 +15,8 @@ const PROFILE_SELECT = {
   jobSearchEnabled: true,
   plan: true,
   freeGenerationsUsed: true,
+  creditsBalance: true,
+  creditsExpireAt: true,
   createdAt: true,
 } as const;
 

@@ -1,5 +1,4 @@
 import { ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { VectorService } from '../vector/vector.service.js';
 import { ClaudeClient } from '../llm/claude.client.js';
@@ -104,7 +103,6 @@ export class ResumeGenerationsService {
     private readonly prisma: PrismaService,
     private readonly vectorService: VectorService,
     private readonly claudeClient: ClaudeClient,
-    private readonly configService: ConfigService,
     private readonly experienceItemsService: ExperienceItemsService,
   ) {}
 
@@ -112,16 +110,56 @@ export class ResumeGenerationsService {
     const user = await this.prisma.user.findUniqueOrThrow({
       where: { id: userId },
     });
-    const limit = Number(
-      this.configService.get('FREE_GENERATIONS_LIMIT') ?? 5,
-    );
 
-    if (user.plan !== 'PREMIUM' && user.freeGenerationsUsed >= limit) {
+    // Reserved BEFORE any Claude calls, as one atomic conditional UPDATE --
+    // not a separate check-then-act (read balance, decide, increment
+    // later), which would let two concurrent requests both read the same
+    // stale balance, both pass, and both get charged to Claude even
+    // though only one credit was actually available. The WHERE clause and
+    // the decrement happen in the same statement, so Postgres's row lock
+    // serializes concurrent attempts correctly -- the second one re-reads
+    // the just-committed balance before its own WHERE is evaluated.
+    const creditReserved = await this.reserveGenerationCredit(userId, user.plan);
+
+    try {
+      return await this.performGeneration(userId, user, dto);
+    } catch (err) {
+      if (creditReserved) {
+        await this.prisma.user
+          .update({ where: { id: userId }, data: { creditsBalance: { increment: 1 } } })
+          .catch((refundErr) => {
+            this.logger.error(
+              `Failed to refund a reserved credit for user ${userId} after a failed generation`,
+              refundErr instanceof Error ? refundErr.stack : refundErr,
+            );
+          });
+      }
+      throw err;
+    }
+  }
+
+  private async reserveGenerationCredit(userId: string, plan: string): Promise<boolean> {
+    // PREMIUM is the legacy/admin-only unlimited grandfather flag --
+    // nothing to reserve, never decremented.
+    if (plan === 'PREMIUM') return false;
+
+    const reserved = await this.prisma.user.updateMany({
+      where: { id: userId, creditsBalance: { gt: 0 } },
+      data: { creditsBalance: { decrement: 1 } },
+    });
+    if (reserved.count === 0) {
       throw new ForbiddenException(
-        'Free generation limit reached. Upgrade to premium for unlimited generations.',
+        'No generation credits remaining. Buy a credit pack to generate more tailored resumes.',
       );
     }
+    return true;
+  }
 
+  private async performGeneration(
+    userId: string,
+    user: { bio: string | null; name: string; email: string; phone: string | null; location: string | null; linkedinUrl: string | null; githubUrl: string | null; websiteUrl: string | null },
+    dto: CreateResumeGenerationDto,
+  ) {
     const rankedTypeEntries = Object.entries(RANKED_TOP_K) as [ExperienceType, number][];
     // Embed the JD once and reuse it for every ranked type's query, rather
     // than re-embedding the identical text per type (which doubled Voyage
@@ -336,12 +374,10 @@ export class ResumeGenerationsService {
       },
     });
 
-    if (user.plan !== 'PREMIUM') {
-      await this.prisma.user.update({
-        where: { id: userId },
-        data: { freeGenerationsUsed: { increment: 1 } },
-      });
-    }
+    // The credit itself was already deducted atomically in
+    // reserveGenerationCredit, before any of the Claude calls above --
+    // nothing left to charge here now that the generation has actually
+    // succeeded.
 
     // keywordResults is request-scoped feedback, not a stored fact about
     // the generation -- attached here rather than persisted, so a candidate

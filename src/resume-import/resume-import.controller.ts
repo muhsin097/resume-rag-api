@@ -9,6 +9,8 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard.js';
+import { CurrentUser } from '../auth/decorators/current-user.decorator.js';
+import type { AuthenticatedUser } from '../auth/decorators/current-user.decorator.js';
 import { ResumeImportService } from './resume-import.service.js';
 
 const MAX_RESUME_FILE_BYTES = 5 * 1024 * 1024;
@@ -25,10 +27,13 @@ export class ResumeImportController {
       limits: { fileSize: MAX_RESUME_FILE_BYTES },
     }),
   )
-  async extract(@UploadedFile() file?: Express.Multer.File) {
+  async extract(
+    @CurrentUser() user: AuthenticatedUser,
+    @UploadedFile() file?: Express.Multer.File,
+  ) {
     if (!file) {
       throw new BadRequestException('No file was uploaded.');
     }
-    return this.resumeImportService.extractExperienceItems(file);
+    return this.resumeImportService.extractExperienceItems(user.id, file);
   }
 }
