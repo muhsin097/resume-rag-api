@@ -7,6 +7,11 @@ interface VoyageEmbeddingResponse {
 
 const MAX_RETRIES = 4;
 const DEFAULT_RETRY_DELAY_MS = 21_000; // Voyage's free-tier cap is 3 req/min.
+// Plain fetch has no timeout of its own -- without this, a hung TCP
+// connection to Voyage would leave the request (and whatever user-facing
+// flow is awaiting it: generation, bulk skill add, resume import) stuck
+// indefinitely instead of failing fast.
+const REQUEST_TIMEOUT_MS = 30_000;
 
 // Thin wrapper over Voyage's REST API -- no official SDK dependency needed
 // for a single endpoint, and keeping it as a plain fetch makes the actual
@@ -53,6 +58,7 @@ export class VoyageClient {
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({ input: texts, model }),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
 
     if (response.status === 429 && attempt <= MAX_RETRIES) {

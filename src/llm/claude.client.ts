@@ -133,6 +133,14 @@ export class ClaudeClient {
   constructor(configService: ConfigService) {
     this.client = new Anthropic({
       apiKey: configService.getOrThrow<string>('ANTHROPIC_API_KEY'),
+      // The SDK's own default is 10 minutes -- fine for a batch script,
+      // but every call here sits inline in a user-facing HTTP request (a
+      // candidate watching the "Generating..." spinner, or a request
+      // thread tied up on this box's 1GB instance). 60s comfortably
+      // covers even the largest call (extractExperienceItemsFromResume,
+      // max_tokens 4000) while still failing fast enough that the
+      // frontend's own request timeout/error state kicks in reasonably.
+      timeout: 60_000,
     });
     this.model =
       configService.get<string>('ANTHROPIC_MODEL') ??

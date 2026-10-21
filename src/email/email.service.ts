@@ -2,6 +2,12 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Resend } from 'resend';
 
+// The Resend SDK exposes no timeout option of its own -- without this, a
+// hung connection to Resend would leave whatever request triggered the
+// email (registration, password reset) stuck waiting indefinitely. Wrapped
+// around the call below with Promise.race rather than relying on the SDK.
+const SEND_TIMEOUT_MS = 15_000;
+
 @Injectable()
 export class EmailService {
   private readonly logger = new Logger(EmailService.name);
@@ -41,12 +47,22 @@ export class EmailService {
   // email that never left Resend. Throwing here is what makes the
   // existing try/catch + Logger.error at the call sites actually work.
   private async send(params: { to: string; subject: string; html: string }): Promise<void> {
-    const { data, error } = await this.getClient().emails.send({
+    const sendPromise = this.getClient().emails.send({
       from: this.fromAddress,
       to: params.to,
       subject: params.subject,
       html: params.html,
     });
+    let timeoutHandle: NodeJS.Timeout;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(
+        () => reject(new Error(`Resend send timed out after ${SEND_TIMEOUT_MS}ms`)),
+        SEND_TIMEOUT_MS,
+      );
+    });
+    const { data, error } = await Promise.race([sendPromise, timeoutPromise]).finally(() =>
+      clearTimeout(timeoutHandle),
+    );
     if (error) {
       throw new Error(`Resend rejected the send: [${error.name}] ${error.message}`);
     }
