@@ -102,6 +102,14 @@ model ExperienceItem {
   endDate      DateTime?        @map("end_date")
   startDatePrecision DatePrecision? @map("start_date_precision")
   endDatePrecision   DatePrecision? @map("end_date_precision")
+  // endDate null is ambiguous on its own -- "still ongoing" and "ended,
+  // exact date unknown" look identical. This disambiguates: true only
+  // means a real present-tense/ongoing signal was found (stated
+  // explicitly on import, or checked explicitly on manual entry). False
+  // with a null endDate means "ended, date just not known" -- NOT
+  // "currently here". Only meaningful for EXPERIENCE/EDUCATION/PROJECT
+  // (the date-range types); ignored for CERTIFICATION (single date).
+  isCurrent    Boolean          @default(false) @map("is_current")
   // Normalized text actually sent to the embedding model -- derived from the fields above.
   content      String           @db.Text
   createdAt    DateTime         @default(now()) @map("created_at")

@@ -59,6 +59,7 @@ export class ExperienceItemsService {
         endDate: dto.endDate ? new Date(dto.endDate) : undefined,
         startDatePrecision: dto.startDatePrecision,
         endDatePrecision: dto.endDatePrecision,
+        isCurrent: dto.isCurrent ?? false,
         content: this.buildContent(dto),
       },
     });
@@ -108,6 +109,7 @@ export class ExperienceItemsService {
           endDate: dto.endDate ? new Date(dto.endDate) : undefined,
           startDatePrecision: dto.startDatePrecision,
           endDatePrecision: dto.endDatePrecision,
+          isCurrent: dto.isCurrent ?? false,
           content: this.buildContent(dto),
         },
       });

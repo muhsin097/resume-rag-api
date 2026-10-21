@@ -1,12 +1,12 @@
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { VectorService } from '../vector/vector.service.js';
 import { ClaudeClient } from '../llm/claude.client.js';
-import type { ResumeDocument } from '../llm/claude.client.js';
+import type { ExperienceFact, ResumeDocument } from '../llm/claude.client.js';
 import { CreateResumeGenerationDto } from './dto/create-resume-generation.dto.js';
 import { ExperienceType } from '../generated/prisma/enums.js';
-import { buildDeterministicSections } from './deterministic-sections.js';
+import { buildContactLine, buildDeterministicSections, buildItemFromFact } from './deterministic-sections.js';
 import { ExperienceItemsService } from '../experience-items/experience-items.service.js';
 
 // Education/Skills/Languages/Certifications are built deterministically in
@@ -58,6 +58,23 @@ function keywordAppearsInResume(keyword: string, resumeText: string): boolean {
   return new RegExp(`\\b${pattern}\\b`, 'i').test(resumeText);
 }
 
+// Claude returns Experience/Project facts in JD-relevance order, not date
+// order -- display still wants most-recent-first, same as every other
+// section. A fact with no start date (shouldn't normally happen for these
+// two types, but not guaranteed) sorts last rather than crashing the
+// comparator.
+function compareFactsByStartDateDesc(
+  a: { startDate?: Date | string | null },
+  b: { startDate?: Date | string | null },
+): number {
+  const aTime = a.startDate ? new Date(a.startDate).getTime() : null;
+  const bTime = b.startDate ? new Date(b.startDate).getTime() : null;
+  if (aTime === null && bTime === null) return 0;
+  if (aTime === null) return 1;
+  if (bTime === null) return -1;
+  return bTime - aTime;
+}
+
 function flattenResumeDocument(doc: ResumeDocument): string {
   const lines = doc.title ? [doc.name, doc.title, doc.contactLine] : [doc.name, doc.contactLine];
   if (doc.summary) lines.push('', doc.summary);
@@ -81,6 +98,8 @@ function flattenResumeDocument(doc: ResumeDocument): string {
 
 @Injectable()
 export class ResumeGenerationsService {
+  private readonly logger = new Logger(ResumeGenerationsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly vectorService: VectorService,
@@ -199,45 +218,71 @@ export class ResumeGenerationsService {
     // never reach Claude, since they still end up in the final document.
     const orderedItems = [...orderedRankedItems, ...achievementItems, ...deterministicItems];
 
-    const structuredContent = await this.claudeClient.generateTailoredResume({
+    // orderedRankedItems can only be EXPERIENCE/PROJECT rows (RANKED_TOP_K
+    // only queries those two types), and achievementItems is always
+    // fetched with type: ACHIEVEMENT -- both casts are narrowing a type
+    // Prisma already guarantees, not asserting something unverified.
+    const facts: ExperienceFact[] = [
+      ...orderedRankedItems.map((item) => ({ ...item, type: item.type as 'EXPERIENCE' | 'PROJECT' })),
+      ...achievementItems.map((item) => ({ ...item, type: 'ACHIEVEMENT' as const })),
+    ];
+    const factsById = new Map(facts.map((fact) => [fact.id, fact]));
+
+    const generated = await this.claudeClient.generateTailoredResume({
       jobDescription: dto.jobDescription,
-      facts: [...orderedRankedItems, ...achievementItems],
-      candidate: {
-        name: user.name,
-        email: user.email,
-        phone: user.phone,
-        location: user.location,
-        bio: user.bio,
-        linkedinUrl: user.linkedinUrl,
-        githubUrl: user.githubUrl,
-        websiteUrl: user.websiteUrl,
-      },
+      facts,
+      bio: user.bio,
     });
 
-    // Splice in the deterministic sections Claude never saw: Skills right
-    // after the summary, Education/Languages/Certifications after
-    // Experience/Projects but before a trailing standalone Achievements
-    // section (if Claude didn't fold every achievement into a role).
+    // Every returned factId is checked against the facts actually sent for
+    // THIS user before being trusted -- a hallucinated or mismatched id
+    // (wrong type, or one that was never in the batch) is dropped rather
+    // than silently used to look up the wrong employer/dates. This also
+    // means title/subtitle/employer/dates for these sections can never
+    // drift from what's actually stored, the same guarantee
+    // Education/Certifications/etc. already have.
+    const experienceSectionItems = this.resolveFactItems(generated.experienceItems, factsById, 'EXPERIENCE')
+      .sort((a, b) => compareFactsByStartDateDesc(a.fact, b.fact))
+      .map(({ fact, bullets }) => buildItemFromFact(fact, bullets));
+    const projectSectionItems = this.resolveFactItems(generated.projectItems, factsById, 'PROJECT')
+      .sort((a, b) => compareFactsByStartDateDesc(a.fact, b.fact))
+      .map(({ fact, bullets }) => buildItemFromFact(fact, bullets));
+    const standaloneAchievements = generated.achievements
+      .filter((entry) => {
+        const fact = factsById.get(entry.factId);
+        if (!fact || fact.type !== 'ACHIEVEMENT') {
+          this.logger.warn(`Dropping achievement with unresolvable factId ${entry.factId}`);
+          return false;
+        }
+        return true;
+      })
+      .map((entry) => entry.bullet);
+
+    // Splice everything into the same section order as before: Skills
+    // right after the summary, Experience/Projects, then
+    // Education/Languages/Certifications, then a trailing standalone
+    // Achievements section (only the achievements that didn't get folded
+    // into a role above).
     const { skills, rest } = buildDeterministicSections(
       deterministicItems,
       dto.jobDescription,
       extraSkillTitles,
     );
-    const achievementsHeadingIndex = structuredContent.sections.findIndex(
-      (s) => s.heading === 'Achievements',
-    );
-    const beforeAchievements =
-      achievementsHeadingIndex === -1
-        ? structuredContent.sections
-        : structuredContent.sections.slice(0, achievementsHeadingIndex);
-    const achievementsSection =
-      achievementsHeadingIndex === -1 ? [] : [structuredContent.sections[achievementsHeadingIndex]];
-    structuredContent.sections = [
-      ...(skills ? [skills] : []),
-      ...beforeAchievements,
-      ...rest,
-      ...achievementsSection,
-    ];
+    const structuredContent: ResumeDocument = {
+      name: user.name,
+      title: generated.title,
+      contactLine: buildContactLine(user),
+      summary: generated.summary,
+      sections: [
+        ...(skills ? [skills] : []),
+        ...(experienceSectionItems.length > 0 ? [{ heading: 'Experience', items: experienceSectionItems }] : []),
+        ...(projectSectionItems.length > 0 ? [{ heading: 'Projects', items: projectSectionItems }] : []),
+        ...rest,
+        ...(standaloneAchievements.length > 0
+          ? [{ heading: 'Achievements', items: [{ title: '', subtitle: null, bullets: standaloneAchievements }] }]
+          : []),
+      ],
+    };
 
     const generatedContent = flattenResumeDocument(structuredContent);
 
@@ -303,6 +348,32 @@ export class ResumeGenerationsService {
     // viewing this same generation later (e.g. from History) doesn't see a
     // stale "just added" callout from a request that's long since settled.
     return { ...generation, keywordResults };
+  }
+
+  // Validates every factId Claude returned against the facts actually
+  // sent for this user, before any of it is used to build a resume
+  // section -- a factId that doesn't resolve, or resolves to the wrong
+  // type (e.g. an ACHIEVEMENT id showing up in experienceItems), is
+  // dropped rather than trusted. This is the ownership/bounds check that
+  // makes the factId citation meaningful instead of just a string Claude
+  // could put anything in.
+  private resolveFactItems(
+    entries: { factId: string; bullets: string[] }[],
+    factsById: Map<string, ExperienceFact>,
+    expectedType: 'EXPERIENCE' | 'PROJECT',
+  ): { fact: ExperienceFact; bullets: string[] }[] {
+    const resolved: { fact: ExperienceFact; bullets: string[] }[] = [];
+    for (const entry of entries) {
+      const fact = factsById.get(entry.factId);
+      if (!fact || fact.type !== expectedType) {
+        this.logger.warn(
+          `Dropping ${expectedType.toLowerCase()} item with unresolvable factId ${entry.factId}`,
+        );
+        continue;
+      }
+      resolved.push({ fact, bullets: entry.bullets });
+    }
+    return resolved;
   }
 
   async findAllForUser(userId: string, page = 1, limit = 10) {

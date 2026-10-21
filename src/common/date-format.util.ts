@@ -25,14 +25,24 @@ export function formatByPrecision(
   return `${MONTH_NAMES[date.getUTCMonth()]} ${date.getUTCFullYear()}`;
 }
 
+// A null end date is ambiguous on its own -- "still ongoing" and "ended,
+// exact date unknown" look identical. isCurrent disambiguates: true means
+// a real present-tense/ongoing signal was found, so this genuinely is
+// "Present". false with no end date means the role/degree/project ended
+// at some point, but the source never said when -- showing "Present"
+// there would claim something we don't actually know. Showing just the
+// start date is honest about that gap rather than guessing in either
+// direction.
 export function formatDateRange(
   start?: Date | string | null,
   end?: Date | string | null,
   startPrecision?: DatePrecision | null,
   endPrecision?: DatePrecision | null,
+  isCurrent?: boolean,
 ): string | null {
   if (!start) return null;
   const startStr = formatByPrecision(start, startPrecision);
-  const endStr = end ? formatByPrecision(end, endPrecision) : 'Present';
-  return `${startStr} – ${endStr}`;
+  if (isCurrent) return `${startStr} – Present`;
+  if (end) return `${startStr} – ${formatByPrecision(end, endPrecision)}`;
+  return startStr;
 }

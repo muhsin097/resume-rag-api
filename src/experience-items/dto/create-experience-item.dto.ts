@@ -1,4 +1,4 @@
-import { IsDateString, IsEnum, IsOptional, IsString, MinLength } from 'class-validator';
+import { IsBoolean, IsDateString, IsEnum, IsOptional, IsString, MinLength } from 'class-validator';
 import { ExperienceType, DatePrecision } from '../../generated/prisma/enums.js';
 
 export class CreateExperienceItemDto {
@@ -32,4 +32,11 @@ export class CreateExperienceItemDto {
   @IsOptional()
   @IsEnum(DatePrecision)
   endDatePrecision?: DatePrecision;
+
+  // Disambiguates "still ongoing" from "ended, exact date unknown" --
+  // both otherwise look identical as a null endDate. See
+  // ExperienceItem.isCurrent in the Prisma schema.
+  @IsOptional()
+  @IsBoolean()
+  isCurrent?: boolean;
 }

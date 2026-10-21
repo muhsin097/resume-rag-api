@@ -6,6 +6,12 @@ import { formatDateRange, type DatePrecision } from '../common/date-format.util.
 export type { DatePrecision };
 
 export interface ExperienceFact {
+  // Real database id -- Claude is required to cite this back per item
+  // (see GeneratedResumeContent below) so the service layer can validate
+  // every returned item actually traces to a fact this user owns, rather
+  // than trusting generated title/employer/dates at face value.
+  id: string;
+  type: 'EXPERIENCE' | 'PROJECT' | 'ACHIEVEMENT';
   title: string;
   organization?: string | null;
   content: string;
@@ -13,6 +19,28 @@ export interface ExperienceFact {
   endDate?: Date | string | null;
   startDatePrecision?: DatePrecision | null;
   endDatePrecision?: DatePrecision | null;
+  // See ExperienceItem.isCurrent in the Prisma schema. Passed through so
+  // the verb-tense instruction below has a reliable signal instead of
+  // inferring "ongoing" from endDate being absent.
+  isCurrent?: boolean;
+}
+
+// What Claude actually contributes to a tailored resume: bullet prose per
+// fact, plus the two genuinely interpretive fields (title, summary). Name,
+// contact details, employer names, role titles, and dates are deliberately
+// NOT part of this -- those are assembled in code from the real
+// ExperienceFact rows (see ResumeGenerationsService), the same way
+// Education/Certifications already work in deterministic-sections.ts.
+// Every bullets entry is tied to a real factId, validated against the
+// facts actually given to this call before being trusted.
+export interface GeneratedResumeContent {
+  title: string | null;
+  summary: string | null;
+  experienceItems: { factId: string; bullets: string[] }[];
+  projectItems: { factId: string; bullets: string[] }[];
+  // Only ACHIEVEMENT facts that didn't get folded into a specific
+  // experience/project item's bullets above.
+  achievements: { factId: string; bullet: string }[];
 }
 
 export const EXTRACTABLE_TYPES = [
@@ -34,6 +62,7 @@ export interface ExtractedExperienceItem {
   endDate?: string | null;
   startDatePrecision?: DatePrecision | null;
   endDatePrecision?: DatePrecision | null;
+  isCurrent?: boolean;
 }
 
 export interface ExtractedContactInfo {
@@ -97,31 +126,30 @@ export interface ResumeDocument {
 // they're built deterministically in code (see deterministic-sections.ts)
 // straight from the stored facts, since they never need JD-aware
 // rewriting: a degree or a skill name doesn't change based on the job
-// posting. Only Experience/Projects (JD-relevance-ranked) and Achievements
-// (which benefit from the "fold into the right role" judgment call) go
-// through the model. This is also why the old "don't drop a skill/degree"
-// completeness rules are gone -- they're structurally impossible to
-// violate now, since those facts never pass through the model to begin
-// with.
+// posting. Experience/Projects/Achievements DO reach the model (bullet
+// prose benefits from JD-aware rewriting), but even there, only the
+// bullets are Claude's to write -- employer, role title, and dates are
+// assembled in code from the same fact rows afterward (see
+// ResumeGenerationsService), identified by the factId Claude cites back.
+// This is why the old "don't invent an employer/date" rules below are
+// about bullet CONTENT, not structure -- the structure is no longer the
+// model's to get right or wrong.
 const SYSTEM_PROMPT = `You are a resume-writing assistant.
 
-You will be given a job description and a set of verified facts about a candidate's real Experience, Projects, and Achievements, retrieved from their profile. EXPERIENCE/PROJECT facts were chosen because they are the ones most semantically relevant to this job description; ACHIEVEMENT facts are the candidate's complete list.
+You will be given a job description and a set of verified facts about a candidate's real Experience, Projects, and Achievements, retrieved from their profile, each tagged with an id and a type (EXPERIENCE, PROJECT, or ACHIEVEMENT). EXPERIENCE/PROJECT facts were chosen because they are the ones most semantically relevant to this job description; ACHIEVEMENT facts are the candidate's complete list.
 
 Hard rules:
-- Do NOT invent any experience, employer, or achievement that is not present in the provided facts. You are rephrasing and prioritizing real facts, not generating new ones.
-- You MAY reword, reorder, and emphasize the real facts to better match the job description's own terminology and keywords (this is what makes the resume ATS-friendly).
-- This resume must be a FRESH rewrite tailored to THIS job description, not a generic restatement. Pull specific keywords, technologies, and phrasing straight from the job description wherever a provided fact genuinely supports it, so two generations against two different job descriptions for the same candidate read differently -- in which facts are emphasized, which keywords surface in the bullets, and the summary's wording.
-- The "title" is a short professional title (e.g. "Senior Backend Developer", "Full Stack Engineer") that appears directly under the candidate's name. Infer it from the candidate's real experience (their most senior/recent relevant role type), but angle the wording toward how this job description frames the role when the facts genuinely support it (e.g. "Backend Engineer" vs "Full Stack Developer" depending on which the candidate's real skills best match for this JD). Do not invent a title the candidate's experience doesn't support. Null only if there are no EXPERIENCE/PROJECT facts to infer one from.
-- The "summary" is a short (max 2 sentences) professional summary, written fresh for this job description -- lead with the 2-4 of the candidate's real skills/technologies most relevant to this specific job description (the skills list itself is shown elsewhere -- you don't need to enumerate it here, just the ones worth highlighting for this JD). Do not pad or repeat the same summary across different job descriptions.
-- Produce sections for "Experience" and "Projects" (only the ones the provided facts support), in that order, then "Achievements" last if any achievement facts don't get folded into a role (see below).
-- One item per role/project, with a concise bolded title (e.g. "Senior Engineer at Acme Corp"), an optional subtitle, and the details as bullet points. Order items within each section in reverse chronological order (most recent/current first, using the date range given with each fact) -- the order facts were given to you is by JD relevance, NOT by date, so you must re-sort by date yourself rather than preserving that order. A fact with no date range given stays wherever it naturally fits.
-- Subtitle dates: copy the exact "Mon YYYY – Mon YYYY" (or "Mon YYYY – Present") format given alongside each fact verbatim into that item's subtitle -- never reformat it as "YYYY-MM" or similar, that reads like a raw database value on a resume. If a fact's date only ever showed a year (no month given), use just the year (e.g. "2015 – 2019") -- do not invent a month/day that wasn't provided.
-- Verb tense: use past tense ("Built", "Led", "Designed") for any role/project whose date range has already ended. Use present tense only for the one role with no end date (the current/ongoing position) -- never present tense for something that ended in the past, regardless of how recently.
-- Achievements: if an ACHIEVEMENT fact clearly belongs to a specific role already covered in Experience (e.g. a metric from that job), fold it into that role's bullets instead of also listing it separately in an "Achievements" section -- never both. Only achievement facts that don't tie to a specific role go in a standalone "Achievements" section (single item, empty title/subtitle, one bullet per achievement), placed last.
-- Include EVERY Experience and Project fact you were given -- never drop an entire role or project to save space or "stay concise." If the full set is large, control length by tightening bullets (fewer, shorter bullets per item), not by omitting entries. A candidate with 8 relevant projects should see all 8 on their tailored resume, not a truncated subset.
-- Be concise at the bullet level -- this should read as a tight 1-2 page resume, not a wall of text. 2-4 bullets per Experience/Project item is usually enough; don't restate the same point in different words to pad length. This is about trimming bullets, not cutting whole entries (see the rule above).
+- Do NOT invent any experience, employer, skill, or achievement that is not present in the provided facts. You are rephrasing a given fact's own content into bullet points, not generating new claims.
+- You MAY reword and emphasize a fact's content to match the job description's own terminology and keywords (this is what makes the resume ATS-friendly) -- but every bullet under a given factId must come from THAT fact's content, not borrowed from a different fact.
+- This resume must be a FRESH rewrite tailored to THIS job description, not a generic restatement. Pull specific keywords, technologies, and phrasing straight from the job description wherever a fact genuinely supports it, so two generations against two different job descriptions for the same candidate read differently -- in which bullets are emphasized, which keywords surface, and the summary's wording.
+- For EVERY fact tagged type=EXPERIENCE, add exactly one entry to experienceItems with that fact's id as factId and 2-4 rewritten bullets. For EVERY fact tagged type=PROJECT, same, but into projectItems. Never skip one to save space or "stay concise" -- if the full set is large, write fewer/shorter bullets per item, not fewer items. A candidate with 8 relevant projects should see all 8.
+- For each ACHIEVEMENT fact: if its content clearly belongs to a specific EXPERIENCE fact already covered (e.g. a metric from that job), fold a bullet derived from it into that EXPERIENCE fact's bullets array instead (do not also add it to achievements). Only achievement facts that don't tie to a specific role go into achievements, one entry per fact with that fact's id as factId.
+- The "title" is a short professional title (e.g. "Senior Backend Developer", "Full Stack Engineer") that appears directly under the candidate's name. Infer it from the real EXPERIENCE/PROJECT facts (most senior/recent relevant role type), angled toward how this job description frames the role when genuinely supported. Null only if there are no EXPERIENCE/PROJECT facts to infer one from.
+- The "summary" is a short (max 2 sentences) professional summary, written fresh for this job description -- lead with 2-4 of the candidate's real skills/technologies most relevant to it (the skills list itself is shown elsewhere -- don't enumerate it here). Do not pad or repeat the same summary across different job descriptions.
+- Verb tense: use past tense ("Built", "Led", "Designed") for any fact that isn't current. Use present tense only for a fact explicitly marked as current/ongoing -- never present tense for something that's ended, regardless of how recently.
+- Be concise at the bullet level -- this should read as a tight 1-2 page resume, not a wall of text. 2-4 bullets per item is usually enough; don't restate the same point in different words to pad length.
 - If the provided facts are thin for this particular job, say so plainly in a bullet rather than padding with invented content.
-- Call the record_tailored_resume tool exactly once with the structured resume -- no commentary outside the tool call.`;
+- Call the record_tailored_resume tool exactly once -- no commentary outside the tool call.`;
 
 // Thin wrapper over the Anthropic SDK -- isolates the one place prompt
 // construction happens, so the "never invent experience" constraint lives
@@ -151,19 +179,14 @@ export class ClaudeClient {
   async generateTailoredResume(params: {
     jobDescription: string;
     facts: ExperienceFact[];
-    candidate: {
-      name: string;
-      email?: string | null;
-      phone?: string | null;
-      location?: string | null;
-      bio?: string | null;
-      linkedinUrl?: string | null;
-      githubUrl?: string | null;
-      websiteUrl?: string | null;
-    };
-  }): Promise<ResumeDocument> {
+    // Not contact info -- qualitative self-description, genuinely useful
+    // context for writing the summary/title. Name/email/phone/location/
+    // links never reach this call at all; those are assembled in code
+    // from the real user row (see ResumeGenerationsService).
+    bio?: string | null;
+  }): Promise<GeneratedResumeContent> {
     const factsBlock = params.facts
-      .map((fact, index) => {
+      .map((fact) => {
         const header = fact.organization
           ? `${fact.title} at ${fact.organization}`
           : fact.title;
@@ -172,91 +195,87 @@ export class ClaudeClient {
           fact.endDate,
           fact.startDatePrecision,
           fact.endDatePrecision,
+          fact.isCurrent,
         );
         const headerLine = dateRange ? `${header} (${dateRange})` : header;
-        return `[Fact ${index + 1}] ${headerLine}\n${fact.content}`;
+        return `[Fact id=${fact.id} type=${fact.type}] ${headerLine}\n${fact.content}`;
       })
       .join('\n\n');
 
-    const contactLines = [
-      params.candidate.name,
-      params.candidate.location,
-      params.candidate.phone,
-      params.candidate.email,
-      params.candidate.linkedinUrl,
-      params.candidate.githubUrl,
-      params.candidate.websiteUrl,
-    ]
-      .filter(Boolean)
-      .join(' | ');
-    const bioLine = params.candidate.bio
-      ? `Candidate summary: ${params.candidate.bio}`
-      : '';
+    const bioLine = params.bio ? `Candidate summary: ${params.bio}` : '';
 
     const response = await this.client.messages.create({
       model: this.model,
       // Up to 8 Experience + 8 Project facts can be fed in (RANKED_TOP_K),
-      // each wanting a title/subtitle/2-4 bullets -- 2000 was tight enough
-      // that Claude would truncate mid-resume (always Projects, since it's
-      // written after Experience in the requested section order), quietly
-      // dropping entries rather than erroring. 4000 matches the budget
-      // already used for extractExperienceItemsFromResume, which handles
-      // similarly-sized content.
+      // each wanting 2-4 bullets -- 2000 was tight enough that Claude
+      // would truncate mid-resume, quietly dropping entries rather than
+      // erroring. 4000 matches the budget already used for
+      // extractExperienceItemsFromResume, which handles similarly-sized
+      // content.
       max_tokens: 4000,
-      // Deterministic on purpose: regenerating against unchanged facts and
-      // JD should produce the same resume, not a reworded one. Without
-      // this, the match score and keyword list could shift between
-      // regenerations even with zero actual change to the candidate's
-      // data -- the analyzeMatch call is deterministic given its input,
-      // but that input (this resume's wording) wasn't, which showed up as
-      // "I regenerated and the score got worse for no reason."
+      // temperature: 0 minimizes run-to-run variance -- NOT a guarantee of
+      // byte-identical output (serving-side batching/floating-point
+      // effects can still shift a token here and there) or of factual
+      // correctness. The point of setting it here is narrower: without
+      // it, regenerating against unchanged facts and an unchanged JD could
+      // reword the resume enough that the match score and keyword list
+      // visibly shifted too, which showed up as "I regenerated and the
+      // score got worse for no reason."
       temperature: 0,
       system: SYSTEM_PROMPT,
       tools: [
         {
           name: GENERATION_TOOL_NAME,
-          description: 'Record the structured, tailored resume',
+          description: 'Record the bullet content for a tailored resume',
           input_schema: {
             type: 'object',
             properties: {
-              name: { type: 'string' },
               title: {
                 type: ['string', 'null'],
-                description: 'Short professional title under the name, e.g. "Senior Backend Developer". Inferred from real experience, angled toward this job description where genuinely supported. Null only if there are no EXPERIENCE/PROJECT facts to infer one from.',
-              },
-              contactLine: {
-                type: 'string',
-                description: 'Pipe-separated contact details from the candidate contact header given to you -- location, phone, email, and any LinkedIn/GitHub/website links when given, e.g. "San Francisco, CA | 555-1234 | jane@example.com | linkedin.com/in/jane". Include every contact detail provided verbatim, in the order given -- don\'t drop the email or any link, don\'t reformat the links.',
+                description: 'Short professional title under the name, e.g. "Senior Backend Developer". Inferred from real EXPERIENCE/PROJECT facts, angled toward this job description where genuinely supported. Null only if there are no EXPERIENCE/PROJECT facts to infer one from.',
               },
               summary: {
                 type: ['string', 'null'],
                 description: 'A fresh 1-2 sentence professional summary written specifically for THIS job description, leading with 2-4 of the candidate\'s real skills/technologies most relevant to it. Must vary between generations against different job descriptions. Null only if there are no facts to summarize.',
               },
-              sections: {
+              experienceItems: {
                 type: 'array',
-                description: 'Use headings from this set, in this order, including only ones the facts support: "Experience", "Projects", "Achievements". Experience/Projects get one item per entry, bolded title + optional subtitle (dates) + bullets. "Achievements" (if any achievement facts didn\'t get folded into a role) gets exactly ONE item: empty string title, subtitle null, one bullet per leftover achievement.',
+                description: 'Exactly one entry per fact tagged type=EXPERIENCE -- never fewer.',
                 items: {
                   type: 'object',
                   properties: {
-                    heading: { type: 'string' },
-                    items: {
-                      type: 'array',
-                      items: {
-                        type: 'object',
-                        properties: {
-                          title: { type: 'string', description: 'e.g. "Senior Engineer at Acme Corp" for Experience; for Skills/Languages/Achievements sections, an empty string ("") -- the section heading already labels it, do not repeat it here.' },
-                          subtitle: { type: ['string', 'null'], description: 'e.g. dates. Null if not applicable.' },
-                          bullets: { type: 'array', items: { type: 'string' } },
-                        },
-                        required: ['title', 'subtitle', 'bullets'],
-                      },
-                    },
+                    factId: { type: 'string', description: 'Copy verbatim from that fact\'s "[Fact id=... type=EXPERIENCE]" tag.' },
+                    bullets: { type: 'array', items: { type: 'string' }, description: '2-4 bullets rewritten from this fact\'s own content only.' },
                   },
-                  required: ['heading', 'items'],
+                  required: ['factId', 'bullets'],
+                },
+              },
+              projectItems: {
+                type: 'array',
+                description: 'Exactly one entry per fact tagged type=PROJECT -- never fewer. Same shape as experienceItems.',
+                items: {
+                  type: 'object',
+                  properties: {
+                    factId: { type: 'string', description: 'Copy verbatim from that fact\'s "[Fact id=... type=PROJECT]" tag.' },
+                    bullets: { type: 'array', items: { type: 'string' } },
+                  },
+                  required: ['factId', 'bullets'],
+                },
+              },
+              achievements: {
+                type: 'array',
+                description: 'One entry per ACHIEVEMENT fact that did NOT get folded into an experienceItems bullet. Omit any achievement fact you folded in instead.',
+                items: {
+                  type: 'object',
+                  properties: {
+                    factId: { type: 'string', description: 'Copy verbatim from that fact\'s "[Fact id=... type=ACHIEVEMENT]" tag.' },
+                    bullet: { type: 'string' },
+                  },
+                  required: ['factId', 'bullet'],
                 },
               },
             },
-            required: ['name', 'title', 'contactLine', 'summary', 'sections'],
+            required: ['title', 'summary', 'experienceItems', 'projectItems', 'achievements'],
           },
         },
       ],
@@ -264,7 +283,7 @@ export class ClaudeClient {
       messages: [
         {
           role: 'user',
-          content: `Job description:\n${params.jobDescription}\n\nCandidate contact header:\n${contactLines}\n${bioLine}\n\nCandidate's verified facts (most relevant first):\n${factsBlock}\n\nBuild a tailored resume using only the facts above.`,
+          content: `Job description:\n${params.jobDescription}\n${bioLine}\n\nCandidate's verified facts (most relevant first):\n${factsBlock}\n\nWrite bullet content using only the facts above.`,
         },
       ],
     });
@@ -273,10 +292,10 @@ export class ClaudeClient {
       (block) => block.type === 'tool_use' && block.name === GENERATION_TOOL_NAME,
     );
     if (toolUseBlock?.type !== 'tool_use') {
-      return { name: params.candidate.name, title: null, contactLine: contactLines, summary: null, sections: [] };
+      return { title: null, summary: null, experienceItems: [], projectItems: [], achievements: [] };
     }
 
-    return toolUseBlock.input as ResumeDocument;
+    return toolUseBlock.input as GeneratedResumeContent;
   }
 
   // Forced tool-use, same pattern as extraction -- compares the JD against
@@ -290,11 +309,12 @@ export class ClaudeClient {
     const response = await this.client.messages.create({
       model: this.model,
       max_tokens: 1024,
-      // Deterministic on purpose: regenerating against the exact same JD
-      // and resume should give the exact same score. At the default
-      // temperature, the model picks a different subset of "important"
-      // keywords each call, so the score swings run-to-run even with no
-      // real change to the resume -- misleading as a before/after signal.
+      // temperature: 0 minimizes run-to-run variance, not a guarantee of
+      // an identical or factually-correct score every time. The reason
+      // for setting it here specifically: at the default temperature, the
+      // model picks a different subset of "important" keywords each call,
+      // so the score swings run-to-run even with no real change to the
+      // resume -- misleading as a before/after signal.
       temperature: 0,
       system:
         'You are an ATS (Applicant Tracking System) match analyzer. Compare a job description against a resume and call the record_match_analysis tool exactly once. Extract ONLY concrete, resume-checkable keywords: a specific skill, technology, tool, framework, certification, methodology, or short qualification like years of experience (roughly 1-4 words, a genuine noun phrase a candidate could literally put in a Skills list). If a requirement sentence lists several things (e.g. "8-10 years selling Microsoft solutions across the Microsoft portfolio"), split it into separate keywords ("8-10 years of experience", "Microsoft solutions", "Microsoft portfolio") rather than keeping it as one long phrase. Never extract a behavioral description, competency statement, or responsibility sentence, even a short one -- reject things like "operates with no supervision", "balances business objectives", "manages difficult and complex situations", "masters all phases of the software development lifecycle" -- these describe HOW someone works, not a checkable skill, and would look absurd added to a Skills list. Some job descriptions (especially competency-framework-style postings) are written almost entirely in this behavioral-prose style with few concrete skills mentioned -- when that happens, it is correct and expected to extract FEWER keywords overall. Do not force a behavioral sentence into a keyword just to have something to extract. Separately, also judge fitScore: your own holistic read of how well this candidate fits the role overall, using their FULL resume (seniority, depth of relevant experience, complementary skills, domain alignment) -- not a restatement of keyword coverage, which is computed elsewhere from your matched/missing lists. fitScore can legitimately sit above or below what pure keyword coverage would suggest. Give your genuine, precise assessment -- do not default to round numbers (ending in 0 or 5, or just below one like 92/82) out of habit; a fully honest assessment is just as likely to land on 77 or 88 as on 80 or 90.',
@@ -372,9 +392,10 @@ export class ClaudeClient {
     const response = await this.client.messages.create({
       model: this.model,
       max_tokens: 1024,
-      // Deterministic on purpose: the same keyword against the same
-      // profile should get the same approve/reject decision every time,
-      // not flip on sampling noise.
+      // temperature: 0 minimizes run-to-run variance (not a guarantee of
+      // an identical decision every time) -- aimed at keeping the same
+      // keyword against the same profile from flipping approve/reject on
+      // sampling noise alone.
       temperature: 0,
       system:
         'You decide whether a candidate may honestly add a requested keyword to their Skills list, given their real skills and experience. Infer their broad professional domain from their real skills/experience (e.g. software engineering, nursing, accounting) and APPROVE any requested keyword that is a genuine skill/technology/tool/methodology within that same broad domain -- it does not need to be a close specialization of something they already listed. A software engineer who knows Node.js and React asking to add "Kubernetes", "LLMs", "RAG", or "vector databases" is plausible even with zero prior AI/infra listed -- professionals routinely pick up adjacent tools and concepts in their own field, and the resume-tailoring context here (a software product) makes AI/ML tooling an especially normal adjacent area for any developer. REJECT only when: (a) the keyword is from a genuinely different, unrelated domain with no plausible connection to their field (e.g. a software engineer adding "cooking", "veterinary medicine", "truck driving"), or (b) it is not a real skill/technology/qualification at all (nonsense, a joke, random text). When genuinely torn between "same domain" and "unrelated", approve -- the bar is "would this be a dishonest claim," not "have they specifically proven this exact tool." Call the record_skill_classifications tool exactly once.',
@@ -534,7 +555,7 @@ export class ClaudeClient {
       model: this.model,
       max_tokens: 4000,
       system:
-        'You extract structured data from resumes. Call the record_experience_items tool exactly once with the contact info/bio you can find, plus every distinct experience, education entry, certification, project, achievement, skill, and spoken/written language. For languages, use the LANGUAGE type with the title as "Language (Proficiency)" e.g. "Spanish (Fluent)" if a proficiency is stated, otherwise just the language name. Do not invent anything not present in the text -- this includes dates: always set startDatePrecision/endDatePrecision to match exactly what the source stated (a resume that just says "2015 – 2019" for a degree is YEAR precision, not a real January date).',
+        'You extract structured data from resumes. Call the record_experience_items tool exactly once with the contact info/bio you can find, plus every distinct experience, education entry, certification, project, achievement, skill, and spoken/written language. For languages, use the LANGUAGE type with the title as "Language (Proficiency)" e.g. "Spanish (Fluent)" if a proficiency is stated, otherwise just the language name. Do not invent anything not present in the text -- this includes dates: always set startDatePrecision/endDatePrecision to match exactly what the source stated (a resume that just says "2015 – 2019" for a degree is YEAR precision, not a real January date). isCurrent needs the same discipline: set it true ONLY when the source explicitly signals this is ongoing ("Present", "Current", "ongoing", or clearly present-tense framing of an end). If the entry simply has no end date stated and no such signal, set isCurrent false and leave endDate null -- do not assume something is current just because an end date wasn\'t given.',
       tools: [
         {
           name: EXTRACTION_TOOL_NAME,
@@ -580,7 +601,7 @@ export class ClaudeClient {
                     endDate: {
                       type: ['string', 'null'],
                       description:
-                        'Same format and precision handling as startDate. Omit (null) if ongoing or unknown.',
+                        'Same format and precision handling as startDate. Omit (null) if the source doesn\'t state one -- this covers BOTH "still ongoing" and "ended, date just not stated"; isCurrent below is what actually distinguishes the two, not this field.',
                     },
                     startDatePrecision: {
                       type: ['string', 'null'],
@@ -593,8 +614,13 @@ export class ClaudeClient {
                       enum: ['YEAR', 'MONTH', 'DAY', null],
                       description: 'Same as startDatePrecision, for endDate.',
                     },
+                    isCurrent: {
+                      type: 'boolean',
+                      description:
+                        'True ONLY when the source explicitly signals this is ongoing (e.g. "Present", "Current", present-tense framing). False otherwise -- including when endDate simply wasn\'t stated. Only meaningful for EXPERIENCE/EDUCATION/PROJECT; always false for other types.',
+                    },
                   },
-                  required: ['type', 'title'],
+                  required: ['type', 'title', 'isCurrent'],
                 },
               },
             },
