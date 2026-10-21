@@ -1,17 +1,32 @@
 import PDFDocument from 'pdfkit';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
 import type { ResumeDocument } from '../llm/claude.client.js';
 
-// Matches the web app's --accent brand color, so the downloaded file
-// visually matches the on-screen preview.
-const ACCENT_COLOR = '#6D28D9';
-// pdfkit only ships the 14 standard PDF fonts (no Geist Sans/Poppins
-// without embedding TTFs we don't have), so this uses Helvetica throughout
-// -- the closest built-in match to the web app's own clean sans-serif
-// look, rather than the old Times-Roman serif body. Margins below match
-// the user's own reference resume (1in top/bottom, 1.25in left/right).
-const HEADING_FONT = 'Helvetica-Bold';
-const BODY_FONT = 'Helvetica';
-const BODY_FONT_BOLD = 'Helvetica-Bold';
+// A lighter tint of the web app's --accent (#6D28D9) -- used only for the
+// exported document's headings, not the site's own buttons/links, per the
+// user's reference resume using a comparatively lighter heading color
+// than our full-strength brand purple.
+const ACCENT_COLOR = '#7C3AED';
+
+// pdfkit only ships the 14 standard PDF fonts -- no Calibri/Cambria
+// without embedding actual font files, and those are proprietary
+// Microsoft fonts we can't legally bundle/redistribute. Carlito and
+// Caladea are Google Fonts (SIL Open Font License), purpose-built as
+// metric-compatible, visually-near-identical open replacements for
+// Calibri and Cambria respectively -- safe to embed, and matches the
+// user's own reference resume's Calibri/Cambria pairing far more closely
+// than the Helvetica fallback used before.
+const FONTS_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'assets', 'fonts');
+const HEADING_FONT = 'Carlito-Bold';
+const BODY_FONT = 'Caladea';
+const BODY_FONT_BOLD = 'Caladea-Bold';
+
+function registerFonts(pdf: PDFKit.PDFDocument): void {
+  pdf.registerFont('Carlito-Bold', path.join(FONTS_DIR, 'Carlito-Bold.ttf'));
+  pdf.registerFont(BODY_FONT, path.join(FONTS_DIR, 'Caladea-Regular.ttf'));
+  pdf.registerFont(BODY_FONT_BOLD, path.join(FONTS_DIR, 'Caladea-Bold.ttf'));
+}
 
 // Skills/Languages/Achievements items carry an empty title today, but
 // older stored generations put the section heading itself in there --
@@ -28,14 +43,15 @@ export function buildPdf(doc: ResumeDocument): Promise<Buffer> {
     const pdf = new PDFDocument({
       margins: { top: 72, bottom: 72, left: 90, right: 90 },
     });
+    registerFonts(pdf);
     const chunks: Buffer[] = [];
     pdf.on('data', (chunk: Buffer) => chunks.push(chunk));
     pdf.on('end', () => resolve(Buffer.concat(chunks)));
     pdf.on('error', reject);
 
-    pdf.font(HEADING_FONT).fontSize(20).fillColor('#000').text(doc.name);
+    pdf.font(HEADING_FONT).fontSize(14).fillColor(ACCENT_COLOR).text(doc.name);
     if (doc.title) {
-      pdf.font(HEADING_FONT).fontSize(12).fillColor(ACCENT_COLOR).text(doc.title);
+      pdf.font(BODY_FONT).fontSize(11).fillColor('#000').text(doc.title);
     }
     pdf.font(BODY_FONT).fontSize(10).fillColor('#555555').text(doc.contactLine);
     pdf.fillColor('#000');
@@ -74,12 +90,12 @@ export function buildPdf(doc: ResumeDocument): Promise<Buffer> {
           if (item.title) {
             pdf
               .font(BODY_FONT_BOLD)
-              .fontSize(10)
+              .fontSize(11)
               .fillColor('#000')
               .text(`${item.title}: `, { continued: true, indent: 10, lineGap: 3 });
-            pdf.font(BODY_FONT).fontSize(10).text(item.bullets.join(', '), { lineGap: 3 });
+            pdf.font(BODY_FONT).fontSize(11).text(item.bullets.join(', '), { lineGap: 3 });
           } else {
-            pdf.font(BODY_FONT).fontSize(10).text(item.bullets.join(', '), { indent: 10, lineGap: 3 });
+            pdf.font(BODY_FONT).fontSize(11).text(item.bullets.join(', '), { indent: 10, lineGap: 3 });
           }
           continue;
         }
@@ -96,7 +112,7 @@ export function buildPdf(doc: ResumeDocument): Promise<Buffer> {
           }
           pdf.moveDown(0.15);
         }
-        pdf.font(BODY_FONT).fontSize(10);
+        pdf.font(BODY_FONT).fontSize(11);
         for (const bullet of item.bullets) {
           pdf.text(`•  ${bullet}`, { indent: 16, lineGap: 3 });
         }

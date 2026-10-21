@@ -1,15 +1,19 @@
 import { Document, Paragraph, TextRun, Packer, convertInchesToTwip } from 'docx';
 import type { ResumeDocument } from '../llm/claude.client.js';
 
-// Matches the web app's --accent brand color, so the downloaded file
-// visually matches the on-screen preview.
-const ACCENT_COLOR = '6D28D9';
-// Single sans-serif family throughout (not a serif body) -- closer to the
-// clean, modern look of the web app's own Geist Sans/Poppins pairing than
-// the original Calibri/Cambria split, using a font that's universally
-// available in Word rather than embedding a custom one.
+// A lighter tint of the web app's --accent (#6D28D9) -- used only for the
+// exported document's headings, not the site's own buttons/links, per the
+// user's reference resume using a comparatively lighter heading color
+// than our full-strength brand purple.
+const ACCENT_COLOR = '7C3AED';
+// Matches the user's own reference resume's style exactly: Calibri for
+// the name/headings, Cambria for body text. Both are real font NAMES, not
+// embedded files -- Word renders using whatever's installed on the
+// viewer's machine, same mechanism the reference file itself uses (it has
+// no embedded font binary either). Both ship with Office/Windows and are
+// near-universally available, same as how Calibri alone worked before.
 const HEADING_FONT = 'Calibri';
-const BODY_FONT = 'Calibri';
+const BODY_FONT = 'Cambria';
 const LINE_SPACING = { line: 276, lineRule: 'auto' as const };
 
 // Skills/Languages/Achievements items carry an empty title today, but
@@ -27,7 +31,7 @@ export function buildDocx(doc: ResumeDocument): Promise<Buffer> {
     new Paragraph({
       spacing: { after: 40, ...LINE_SPACING },
       children: [
-        new TextRun({ text: doc.name, bold: true, size: 32, font: HEADING_FONT }),
+        new TextRun({ text: doc.name, bold: true, color: ACCENT_COLOR, size: 28, font: HEADING_FONT }),
       ],
     }),
   ];
@@ -36,9 +40,7 @@ export function buildDocx(doc: ResumeDocument): Promise<Buffer> {
     children.push(
       new Paragraph({
         spacing: { after: 40, ...LINE_SPACING },
-        children: [
-          new TextRun({ text: doc.title, bold: true, color: ACCENT_COLOR, size: 24, font: HEADING_FONT }),
-        ],
+        children: [new TextRun({ text: doc.title, size: 22, font: BODY_FONT })],
       }),
     );
   }
