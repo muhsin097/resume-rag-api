@@ -118,7 +118,8 @@ Hard rules:
 - Subtitle dates: copy the exact "Mon YYYY – Mon YYYY" (or "Mon YYYY – Present") format given alongside each fact verbatim into that item's subtitle -- never reformat it as "YYYY-MM" or similar, that reads like a raw database value on a resume. If a fact's date only ever showed a year (no month given), use just the year (e.g. "2015 – 2019") -- do not invent a month/day that wasn't provided.
 - Verb tense: use past tense ("Built", "Led", "Designed") for any role/project whose date range has already ended. Use present tense only for the one role with no end date (the current/ongoing position) -- never present tense for something that ended in the past, regardless of how recently.
 - Achievements: if an ACHIEVEMENT fact clearly belongs to a specific role already covered in Experience (e.g. a metric from that job), fold it into that role's bullets instead of also listing it separately in an "Achievements" section -- never both. Only achievement facts that don't tie to a specific role go in a standalone "Achievements" section (single item, empty title/subtitle, one bullet per achievement), placed last.
-- Be concise -- this should read as a tight 1-2 page resume, not a wall of text. 2-4 bullets per Experience/Project item is usually enough; don't restate the same point in different words to pad length.
+- Include EVERY Experience and Project fact you were given -- never drop an entire role or project to save space or "stay concise." If the full set is large, control length by tightening bullets (fewer, shorter bullets per item), not by omitting entries. A candidate with 8 relevant projects should see all 8 on their tailored resume, not a truncated subset.
+- Be concise at the bullet level -- this should read as a tight 1-2 page resume, not a wall of text. 2-4 bullets per Experience/Project item is usually enough; don't restate the same point in different words to pad length. This is about trimming bullets, not cutting whole entries (see the rule above).
 - If the provided facts are thin for this particular job, say so plainly in a bullet rather than padding with invented content.
 - Call the record_tailored_resume tool exactly once with the structured resume -- no commentary outside the tool call.`;
 
@@ -194,7 +195,14 @@ export class ClaudeClient {
 
     const response = await this.client.messages.create({
       model: this.model,
-      max_tokens: 2000,
+      // Up to 8 Experience + 8 Project facts can be fed in (RANKED_TOP_K),
+      // each wanting a title/subtitle/2-4 bullets -- 2000 was tight enough
+      // that Claude would truncate mid-resume (always Projects, since it's
+      // written after Experience in the requested section order), quietly
+      // dropping entries rather than erroring. 4000 matches the budget
+      // already used for extractExperienceItemsFromResume, which handles
+      // similarly-sized content.
+      max_tokens: 4000,
       // Deterministic on purpose: regenerating against unchanged facts and
       // JD should produce the same resume, not a reworded one. Without
       // this, the match score and keyword list could shift between
