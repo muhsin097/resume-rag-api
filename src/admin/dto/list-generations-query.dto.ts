@@ -6,8 +6,8 @@ export class ListGenerationsQueryDto {
   userId?: string;
 
   @IsOptional()
-  @IsIn(['createdAt', 'matchScore'])
-  sortBy?: 'createdAt' | 'matchScore';
+  @IsIn(['createdAt', 'fitScore'])
+  sortBy?: 'createdAt' | 'fitScore';
 
   @IsOptional()
   @IsIn(['asc', 'desc'])

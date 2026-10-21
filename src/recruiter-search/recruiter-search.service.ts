@@ -120,7 +120,7 @@ export class RecruiterSearchService {
           name: user.name,
           bio: user.bio,
           location: user.location,
-          matchScore: analysis.matchScore,
+          matchScore: analysis.fitScore,
           matchedKeywords: analysis.matchedKeywords,
           missingKeywords: analysis.missingKeywords,
         };

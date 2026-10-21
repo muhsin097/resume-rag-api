@@ -31,7 +31,7 @@ export class AdminService {
           by: ['type'],
           _count: { _all: true },
         }),
-        this.prisma.resumeGeneration.aggregate({ _avg: { matchScore: true } }),
+        this.prisma.resumeGeneration.aggregate({ _avg: { fitScore: true } }),
         this.prisma.experienceItem.groupBy({
           by: ['title'],
           where: { type: 'SKILL' },
@@ -54,7 +54,7 @@ export class AdminService {
       itemCount,
       itemsByType: itemsByType.map((row) => ({ type: row.type, count: row._count._all })),
       generationCount,
-      avgMatchScore: Math.round(scoreAgg._avg.matchScore ?? 0),
+      avgMatchScore: Math.round(scoreAgg._avg.fitScore ?? 0),
       topSkills: skillGroups.map((row) => ({ title: row.title, count: row._count._all })),
       generationsByDay: this.bucketByDay(recentGenerations.map((row) => row.createdAt)),
     };

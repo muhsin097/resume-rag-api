@@ -263,6 +263,18 @@ export class ResumeGenerationsService {
       }
     }
 
+    // keywordCoverage is computed here, not trusted from the model -- it's
+    // deterministically derived from the same (post-reconciliation) lists
+    // shown to the user as chips, so "everything matched" always means
+    // exactly 100 and the number is always explainable. fitScore, by
+    // contrast, is kept as Claude's own holistic judgment, used as-is --
+    // it's a deliberately separate signal (overall candidate fit, not just
+    // literal JD keyword presence) rather than a second copy of the same
+    // ratio.
+    const totalKeywords = matchedKeywords.length + missingKeywords.length;
+    const keywordCoverage =
+      totalKeywords === 0 ? analysis.fitScore : Math.round((matchedKeywords.length / totalKeywords) * 100);
+
     const generation = await this.prisma.resumeGeneration.create({
       data: {
         userId,
@@ -272,7 +284,8 @@ export class ResumeGenerationsService {
         retrievedItemIds: orderedItems.map((item) => item.id),
         generatedContent,
         structuredContent: structuredContent as object,
-        matchScore: analysis.matchScore,
+        fitScore: analysis.fitScore,
+        keywordCoverage,
         matchedKeywords,
         missingKeywords,
       },

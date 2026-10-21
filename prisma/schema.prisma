@@ -159,7 +159,14 @@ model ResumeGeneration {
   // Null for generations created before this field existed. Export
   // (DOCX/PDF) requires this -- see resume-export module.
   structuredContent Json?   @map("structured_content")
-  matchScore       Int      @default(0) @map("match_score")
+  // Two deliberately separate signals, not one blended number: fitScore is
+  // Claude's holistic judgment of overall candidate fit (considers the
+  // whole profile, not just literal JD keyword presence -- can exceed or
+  // fall short of keywordCoverage). keywordCoverage is a plain, explainable
+  // percentage computed in code from matched/missing below (never an LLM
+  // guess), so "everything matched" always means exactly 100 there.
+  fitScore         Int      @default(0) @map("match_score")
+  keywordCoverage  Int      @default(0) @map("keyword_coverage")
   matchedKeywords  String[] @default([]) @map("matched_keywords")
   missingKeywords  String[] @default([]) @map("missing_keywords")
   createdAt        DateTime @default(now()) @map("created_at")

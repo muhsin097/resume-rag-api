@@ -54,7 +54,10 @@ const GENERATION_TOOL_NAME = 'record_tailored_resume';
 const JOB_META_TOOL_NAME = 'record_job_meta';
 
 export interface MatchAnalysis {
-  matchScore: number;
+  // Claude's holistic judgment of overall candidate fit -- distinct from
+  // keywordCoverage (computed deterministically in the service layer from
+  // matchedKeywords/missingKeywords below, never an LLM guess).
+  fitScore: number;
   matchedKeywords: string[];
   missingKeywords: string[];
 }
@@ -272,7 +275,7 @@ export class ClaudeClient {
       // real change to the resume -- misleading as a before/after signal.
       temperature: 0,
       system:
-        'You are an ATS (Applicant Tracking System) match analyzer. Compare a job description against a resume and call the record_match_analysis tool exactly once. Extract ONLY concrete, resume-checkable keywords: a specific skill, technology, tool, framework, certification, methodology, or short qualification like years of experience (roughly 1-4 words, a genuine noun phrase a candidate could literally put in a Skills list). If a requirement sentence lists several things (e.g. "8-10 years selling Microsoft solutions across the Microsoft portfolio"), split it into separate keywords ("8-10 years of experience", "Microsoft solutions", "Microsoft portfolio") rather than keeping it as one long phrase. Never extract a behavioral description, competency statement, or responsibility sentence, even a short one -- reject things like "operates with no supervision", "balances business objectives", "manages difficult and complex situations", "masters all phases of the software development lifecycle" -- these describe HOW someone works, not a checkable skill, and would look absurd added to a Skills list. Some job descriptions (especially competency-framework-style postings) are written almost entirely in this behavioral-prose style with few concrete skills mentioned -- when that happens, it is correct and expected to extract FEWER keywords overall. Do not force a behavioral sentence into a keyword just to have something to extract.',
+        'You are an ATS (Applicant Tracking System) match analyzer. Compare a job description against a resume and call the record_match_analysis tool exactly once. Extract ONLY concrete, resume-checkable keywords: a specific skill, technology, tool, framework, certification, methodology, or short qualification like years of experience (roughly 1-4 words, a genuine noun phrase a candidate could literally put in a Skills list). If a requirement sentence lists several things (e.g. "8-10 years selling Microsoft solutions across the Microsoft portfolio"), split it into separate keywords ("8-10 years of experience", "Microsoft solutions", "Microsoft portfolio") rather than keeping it as one long phrase. Never extract a behavioral description, competency statement, or responsibility sentence, even a short one -- reject things like "operates with no supervision", "balances business objectives", "manages difficult and complex situations", "masters all phases of the software development lifecycle" -- these describe HOW someone works, not a checkable skill, and would look absurd added to a Skills list. Some job descriptions (especially competency-framework-style postings) are written almost entirely in this behavioral-prose style with few concrete skills mentioned -- when that happens, it is correct and expected to extract FEWER keywords overall. Do not force a behavioral sentence into a keyword just to have something to extract. Separately, also judge fitScore: your own holistic read of how well this candidate fits the role overall, using their FULL resume (seniority, depth of relevant experience, complementary skills, domain alignment) -- not a restatement of keyword coverage, which is computed elsewhere from your matched/missing lists. fitScore can legitimately sit above or below what pure keyword coverage would suggest. Give your genuine, precise assessment -- do not default to round numbers (ending in 0 or 5, or just below one like 92/82) out of habit; a fully honest assessment is just as likely to land on 77 or 88 as on 80 or 90.',
       tools: [
         {
           name: ANALYSIS_TOOL_NAME,
@@ -281,12 +284,12 @@ export class ClaudeClient {
           input_schema: {
             type: 'object',
             properties: {
-              matchScore: {
+              fitScore: {
                 type: 'integer',
                 minimum: 0,
                 maximum: 100,
                 description:
-                  'Overall match score 0-100, based on how well the resume covers the important skills/qualifications/keywords the job description asks for.',
+                  "Your own holistic 0-100 judgment of how well this candidate fits the role overall -- weigh their full resume (seniority, depth of relevant experience, complementary/adjacent skills, domain alignment), not just literal keyword presence in the job description. This is deliberately separate from keyword coverage (computed elsewhere from matchedKeywords/missingKeywords) and can legitimately sit above or below it. Give a genuinely precise number -- avoid defaulting to round or 'safe-looking' values (e.g. 70/80/90, or 72/82/92) out of habit.",
               },
               matchedKeywords: {
                 type: 'array',
@@ -301,7 +304,7 @@ export class ClaudeClient {
                   'Concrete, resume-checkable skills/technologies/tools/certifications/qualifications (1-4 words each) the job description asks for that the resume does NOT reflect -- same granularity and same exclusions as matchedKeywords (no behavioral/competency phrases). Each entry must be copied verbatim as it appears in the job description text. Only include things that genuinely matter for the role -- not every noun in the posting. A posting written mostly in behavioral/competency prose may legitimately yield few or no entries here -- do not stretch a behavioral sentence into a fake keyword.',
               },
             },
-            required: ['matchScore', 'matchedKeywords', 'missingKeywords'],
+            required: ['fitScore', 'matchedKeywords', 'missingKeywords'],
           },
         },
       ],
@@ -318,12 +321,12 @@ export class ClaudeClient {
       (block) => block.type === 'tool_use' && block.name === ANALYSIS_TOOL_NAME,
     );
     if (toolUseBlock?.type !== 'tool_use') {
-      return { matchScore: 0, matchedKeywords: [], missingKeywords: [] };
+      return { fitScore: 0, matchedKeywords: [], missingKeywords: [] };
     }
 
     const input = toolUseBlock.input as Partial<MatchAnalysis>;
     return {
-      matchScore: input.matchScore ?? 0,
+      fitScore: input.fitScore ?? 0,
       matchedKeywords: input.matchedKeywords ?? [],
       missingKeywords: input.missingKeywords ?? [],
     };
