@@ -80,6 +80,23 @@ export class PaymentsService {
     };
   }
 
+  // Polled by the frontend after Razorpay's own client-side success
+  // callback fires, so "purchase complete" in the UI reflects the webhook
+  // actually having landed and credited the account -- not just a blind
+  // timeout guess that it probably did by now. Scoped to the requesting
+  // user's own orders (WHERE userId) so one account can't probe another's
+  // purchase status by guessing order ids.
+  async getOrderStatus(userId: string, orderId: string) {
+    const purchase = await this.prisma.creditPurchase.findFirst({
+      where: { razorpayOrderId: orderId, userId },
+      select: { status: true, credits: true },
+    });
+    if (!purchase) {
+      throw new BadRequestException('Unknown order.');
+    }
+    return purchase;
+  }
+
   // rawBody must be the exact bytes Razorpay signed (see main.ts's
   // express.json verify callback) -- re-serializing an already-parsed
   // object is not guaranteed byte-identical and would make every

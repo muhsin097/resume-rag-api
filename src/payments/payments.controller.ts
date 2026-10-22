@@ -1,4 +1,4 @@
-import { Body, Controller, Headers, HttpCode, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Headers, HttpCode, Param, Post, Req, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard.js';
 import { CurrentUser } from '../auth/decorators/current-user.decorator.js';
@@ -21,6 +21,12 @@ export class PaymentsController {
   @Post('create-order')
   async createOrder(@CurrentUser() user: AuthenticatedUser, @Body() dto: CreateOrderDto) {
     return this.paymentsService.createOrder(user.id, dto.pack);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('orders/:orderId')
+  async getOrderStatus(@CurrentUser() user: AuthenticatedUser, @Param('orderId') orderId: string) {
+    return this.paymentsService.getOrderStatus(user.id, orderId);
   }
 
   // Deliberately NOT behind JwtAuthGuard -- Razorpay's own servers call
