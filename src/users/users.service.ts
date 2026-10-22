@@ -20,23 +20,37 @@ const PROFILE_SELECT = {
   createdAt: true,
 } as const;
 
+// Credits past their expiry are rejected at spend time (see
+// reserveGenerationCredit), but the raw DB row isn't zeroed out lazily --
+// without this, the badge/dashboard would keep showing a stale "5 credits"
+// that then fails with "expired" the moment the user actually tries to
+// spend one, which reads as a bug even though it's working as designed.
+function withEffectiveCredits<T extends { creditsBalance: number; creditsExpireAt: Date | null }>(
+  user: T,
+): T {
+  const expired = user.creditsExpireAt !== null && user.creditsExpireAt <= new Date();
+  return expired ? { ...user, creditsBalance: 0 } : user;
+}
+
 @Injectable()
 export class UsersService {
   constructor(private readonly prisma: PrismaService) {}
 
-  findMe(id: string) {
-    return this.prisma.user.findUniqueOrThrow({
+  async findMe(id: string) {
+    const user = await this.prisma.user.findUniqueOrThrow({
       where: { id },
       select: PROFILE_SELECT,
     });
+    return withEffectiveCredits(user);
   }
 
-  update(id: string, dto: UpdateUserDto) {
-    return this.prisma.user.update({
+  async update(id: string, dto: UpdateUserDto) {
+    const user = await this.prisma.user.update({
       where: { id },
       data: dto,
       select: PROFILE_SELECT,
     });
+    return withEffectiveCredits(user);
   }
 
   // Soft delete, not a row removal -- email and freeGenerationsUsed are

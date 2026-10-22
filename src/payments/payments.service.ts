@@ -127,38 +127,49 @@ export class PaymentsService {
 
     const { order_id: orderId, id: paymentId } = event.payload.payment.entity;
 
-    // Atomic, idempotent: only the delivery that actually flips PENDING ->
-    // PAID proceeds to credit the account. Razorpay can and does retry
-    // webhook delivery (and can occasionally double-deliver even without a
-    // failure) -- a second delivery for the same payment finds count:0
-    // here and returns without crediting twice.
-    const claimed = await this.prisma.creditPurchase.updateMany({
-      where: { razorpayOrderId: orderId, status: PurchaseStatus.PENDING },
-      data: { status: PurchaseStatus.PAID, razorpayPaymentId: paymentId, paidAt: new Date() },
+    const expiresAt = new Date(Date.now() + CREDITS_EXPIRY_DAYS * 24 * 60 * 60 * 1000);
+
+    // Atomic AND idempotent, now in one DB transaction: previously the
+    // PENDING->PAID flip and the credit increment were two separate
+    // awaits, so a crash (process restart, dropped DB connection) between
+    // them left a purchase permanently stuck PAID with zero credits
+    // granted -- and Razorpay's retry would then find status: PAID and
+    // silently skip it forever, since the idempotency check only looks
+    // for PENDING. Wrapping both in $transaction means either the whole
+    // grant lands, or Postgres rolls it back to PENDING so the next
+    // webhook retry can actually succeed.
+    const credited = await this.prisma.$transaction(async (tx) => {
+      const claimed = await tx.creditPurchase.updateMany({
+        where: { razorpayOrderId: orderId, status: PurchaseStatus.PENDING },
+        data: { status: PurchaseStatus.PAID, razorpayPaymentId: paymentId, paidAt: new Date() },
+      });
+      if (claimed.count === 0) return null;
+
+      const purchase = await tx.creditPurchase.findUniqueOrThrow({
+        where: { razorpayOrderId: orderId },
+      });
+
+      await tx.user.update({
+        where: { id: purchase.userId },
+        data: {
+          creditsBalance: { increment: purchase.credits },
+          // Overwritten, not extended -- one combined balance/expiry rather
+          // than FIFO-expiring batches (see the schema comment on
+          // creditsExpireAt for the reasoning).
+          creditsExpireAt: expiresAt,
+        },
+      });
+
+      return purchase;
     });
-    if (claimed.count === 0) {
+
+    if (!credited) {
       this.logger.log(`Webhook for order ${orderId} ignored -- already processed or unknown order`);
       return;
     }
 
-    const purchase = await this.prisma.creditPurchase.findUniqueOrThrow({
-      where: { razorpayOrderId: orderId },
-    });
-
-    const expiresAt = new Date(Date.now() + CREDITS_EXPIRY_DAYS * 24 * 60 * 60 * 1000);
-    await this.prisma.user.update({
-      where: { id: purchase.userId },
-      data: {
-        creditsBalance: { increment: purchase.credits },
-        // Overwritten, not extended -- one combined balance/expiry rather
-        // than FIFO-expiring batches (see the schema comment on
-        // creditsExpireAt for the reasoning).
-        creditsExpireAt: expiresAt,
-      },
-    });
-
     this.logger.log(
-      `Credited ${purchase.credits} generations to user ${purchase.userId} (order ${orderId}, payment ${paymentId})`,
+      `Credited ${credited.credits} generations to user ${credited.userId} (order ${orderId}, payment ${paymentId})`,
     );
   }
 }

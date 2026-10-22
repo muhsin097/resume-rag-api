@@ -143,11 +143,32 @@ export class ResumeGenerationsService {
     // nothing to reserve, never decremented.
     if (plan === 'PREMIUM') return false;
 
+    const now = new Date();
+    // creditsExpireAt was always written on purchase but never actually
+    // checked anywhere -- an expired balance was silently still spendable.
+    // Included directly in the atomic WHERE (not a separate pre-check)
+    // so the race-condition guarantee from the original fix still holds.
     const reserved = await this.prisma.user.updateMany({
-      where: { id: userId, creditsBalance: { gt: 0 } },
+      where: {
+        id: userId,
+        creditsBalance: { gt: 0 },
+        OR: [{ creditsExpireAt: null }, { creditsExpireAt: { gt: now } }],
+      },
       data: { creditsBalance: { decrement: 1 } },
     });
     if (reserved.count === 0) {
+      // Distinguish "you have an expired balance" from "you have nothing"
+      // -- the fix only needs a read here, not part of the atomic
+      // decrement itself, so it doesn't reopen the race window.
+      const current = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { creditsBalance: true, creditsExpireAt: true },
+      });
+      if (current && current.creditsBalance > 0 && current.creditsExpireAt && current.creditsExpireAt <= now) {
+        throw new ForbiddenException(
+          'Your generation credits have expired. Buy a credit pack to generate more tailored resumes.',
+        );
+      }
       throw new ForbiddenException(
         'No generation credits remaining. Buy a credit pack to generate more tailored resumes.',
       );
