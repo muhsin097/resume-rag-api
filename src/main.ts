@@ -1,3 +1,4 @@
+import './instrument.js';
 import type { IncomingMessage } from 'node:http';
 import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
