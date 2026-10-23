@@ -285,8 +285,17 @@ export class ClaudeClient {
     const toolUseBlock = response.content.find(
       (block) => block.type === 'tool_use' && block.name === GENERATION_TOOL_NAME,
     );
+    // Previously returned a fake-empty success object here (null title/
+    // summary, empty arrays) -- the service layer had no way to tell
+    // "Claude genuinely had nothing to say" apart from "the response was
+    // malformed," so a malformed response was silently saved as a
+    // near-blank resume AND kept the credit already charged for it.
+    // Throwing routes this into the existing reserveGenerationCredit
+    // catch-and-refund path instead.
     if (toolUseBlock?.type !== 'tool_use') {
-      return { title: null, summary: null, experienceItems: [], projectItems: [], achievements: [] };
+      throw new Error(
+        `generateTailoredResume: no ${GENERATION_TOOL_NAME} tool-use block in Claude's response (stop_reason: ${response.stop_reason})`,
+      );
     }
 
     return toolUseBlock.input as GeneratedResumeContent;

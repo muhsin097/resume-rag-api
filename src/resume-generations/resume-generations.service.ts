@@ -60,11 +60,22 @@ function hasOwnItemTitle(item: { title: string }, section: { heading: string }):
 // false-positive inside unrelated words ("email", "digital"), and treats
 // ".", "-", "/", and whitespace as interchangeable so "CI/CD" also matches
 // "CI-CD" or "CI CD", "Node.js" also matches "Node JS", etc.
-function keywordAppearsInResume(keyword: string, resumeText: string): boolean {
+export function keywordAppearsInResume(keyword: string, resumeText: string): boolean {
   const trimmed = keyword.trim();
   if (!trimmed) return false;
-  const escaped = trimmed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const pattern = escaped.replace(/[\s\-/.]+/g, '[\\s\\-/.]*');
+  // Split on runs of the interchangeable separator chars FIRST, escape
+  // each remaining token, then rejoin with the flexible separator
+  // pattern -- escaping the whole string before splitting on separators
+  // (the previous approach) corrupted any literal "." in the keyword,
+  // since "." is both a regex-special character that escaping turns
+  // into the two-char sequence "\." and one of the separator chars the
+  // second pass then tried to replace, producing a broken pattern that
+  // silently failed to match even the keyword's own exact text (e.g.
+  // "Node.js" never matched literal "Node.js" in the resume).
+  const tokens = trimmed.split(/[\s\-/.]+/).filter(Boolean);
+  if (tokens.length === 0) return false;
+  const escapedTokens = tokens.map((token) => token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const pattern = escapedTokens.join('[\\s\\-/.]*');
   return new RegExp(`\\b${pattern}\\b`, 'i').test(resumeText);
 }
 
@@ -74,7 +85,7 @@ function keywordAppearsInResume(keyword: string, resumeText: string): boolean {
 // deterministically from the result rather than trusting the model's own
 // ratio. Used identically in both places so a rescore after adding a
 // skill produces the exact same kind of score a fresh generation would.
-function reconcileKeywordMatches(
+export function reconcileKeywordMatches(
   analysis: MatchAnalysis,
   resumeText: string,
 ): { matchedKeywords: string[]; missingKeywords: string[]; keywordCoverage: number } {
@@ -98,7 +109,7 @@ function reconcileKeywordMatches(
 // section. A fact with no start date (shouldn't normally happen for these
 // two types, but not guaranteed) sorts last rather than crashing the
 // comparator.
-function compareFactsByStartDateDesc(
+export function compareFactsByStartDateDesc(
   a: { startDate?: Date | string | null },
   b: { startDate?: Date | string | null },
 ): number {
@@ -108,6 +119,99 @@ function compareFactsByStartDateDesc(
   if (aTime === null) return 1;
   if (bTime === null) return -1;
   return bTime - aTime;
+}
+
+// Standalone (not a class method) specifically so it's directly unit-
+// testable against a real Postgres connection -- firing real concurrent
+// calls at it -- without needing to construct the whole
+// ResumeGenerationsService (Claude/Voyage clients included). The class
+// method below is a thin wrapper.
+//
+// Atomic conditional UPDATE, not a separate check-then-act (read balance,
+// decide, increment later), which would let two concurrent requests both
+// read the same stale balance, both pass, and both get charged to Claude
+// even though only enough credits for one was actually available. The
+// WHERE clause and the decrement happen in the same statement, so
+// Postgres's row lock serializes concurrent attempts correctly -- the
+// second one re-reads the just-committed balance before its own WHERE is
+// evaluated. creditsExpireAt is checked in the same WHERE for the same
+// reason -- a separate pre-check would reopen the race window.
+export async function reserveGenerationCredit(
+  prisma: PrismaService,
+  userId: string,
+  plan: string,
+  amount: number,
+): Promise<boolean> {
+  // PREMIUM is the legacy/admin-only unlimited grandfather flag --
+  // nothing to reserve, never decremented.
+  if (plan === 'PREMIUM') return false;
+
+  const now = new Date();
+  const reserved = await prisma.user.updateMany({
+    where: {
+      id: userId,
+      creditsBalance: { gte: amount },
+      OR: [{ creditsExpireAt: null }, { creditsExpireAt: { gt: now } }],
+    },
+    data: { creditsBalance: { decrement: amount } },
+  });
+  if (reserved.count === 0) {
+    // Distinguish "you have an expired balance" from "you have nothing"
+    // -- the fix only needs a read here, not part of the atomic
+    // decrement itself, so it doesn't reopen the race window.
+    const current = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { creditsBalance: true, creditsExpireAt: true },
+    });
+    if (current && current.creditsBalance > 0 && current.creditsExpireAt && current.creditsExpireAt <= now) {
+      throw new ForbiddenException(
+        'Your generation credits have expired. Buy a credit pack to generate more tailored resumes.',
+      );
+    }
+    throw new ForbiddenException(
+      'Not enough generation credits remaining. Buy a credit pack to generate more tailored resumes.',
+    );
+  }
+  return true;
+}
+
+const resolveFactItemsLogger = new Logger('ResumeGenerationsService');
+
+// Standalone (not a class method) for the same reason as
+// reserveGenerationCredit above -- direct unit testability with
+// controlled/mocked inputs, since forcing the real Claude API to return
+// a duplicate or unresolvable factId on demand isn't practical.
+//
+// Validates every factId Claude returned against the facts actually
+// sent for this user, before any of it is used to build a resume
+// section -- a factId that doesn't resolve, or resolves to the wrong
+// type (e.g. an ACHIEVEMENT id showing up in experienceItems), is
+// dropped rather than trusted. A repeated factId is also dropped (keeps
+// only the first occurrence) -- otherwise the same job/project entry
+// would appear twice in the final resume.
+export function resolveFactItems(
+  entries: { factId: string; bullets: string[] }[],
+  factsById: Map<string, ExperienceFact>,
+  expectedType: 'EXPERIENCE' | 'PROJECT',
+): { fact: ExperienceFact; bullets: string[] }[] {
+  const resolved: { fact: ExperienceFact; bullets: string[] }[] = [];
+  const seenFactIds = new Set<string>();
+  for (const entry of entries) {
+    const fact = factsById.get(entry.factId);
+    if (!fact || fact.type !== expectedType) {
+      resolveFactItemsLogger.warn(
+        `Dropping ${expectedType.toLowerCase()} item with unresolvable factId ${entry.factId}`,
+      );
+      continue;
+    }
+    if (seenFactIds.has(entry.factId)) {
+      resolveFactItemsLogger.warn(`Dropping duplicate ${expectedType.toLowerCase()} item for factId ${entry.factId}`);
+      continue;
+    }
+    seenFactIds.add(entry.factId);
+    resolved.push({ fact, bullets: entry.bullets });
+  }
+  return resolved;
 }
 
 function flattenResumeDocument(doc: ResumeDocument): string {
@@ -331,42 +435,8 @@ export class ResumeGenerationsService {
     return keywords;
   }
 
-  private async reserveGenerationCredit(userId: string, plan: string, amount: number): Promise<boolean> {
-    // PREMIUM is the legacy/admin-only unlimited grandfather flag --
-    // nothing to reserve, never decremented.
-    if (plan === 'PREMIUM') return false;
-
-    const now = new Date();
-    // creditsExpireAt was always written on purchase but never actually
-    // checked anywhere -- an expired balance was silently still spendable.
-    // Included directly in the atomic WHERE (not a separate pre-check)
-    // so the race-condition guarantee from the original fix still holds.
-    const reserved = await this.prisma.user.updateMany({
-      where: {
-        id: userId,
-        creditsBalance: { gte: amount },
-        OR: [{ creditsExpireAt: null }, { creditsExpireAt: { gt: now } }],
-      },
-      data: { creditsBalance: { decrement: amount } },
-    });
-    if (reserved.count === 0) {
-      // Distinguish "you have an expired balance" from "you have nothing"
-      // -- the fix only needs a read here, not part of the atomic
-      // decrement itself, so it doesn't reopen the race window.
-      const current = await this.prisma.user.findUnique({
-        where: { id: userId },
-        select: { creditsBalance: true, creditsExpireAt: true },
-      });
-      if (current && current.creditsBalance > 0 && current.creditsExpireAt && current.creditsExpireAt <= now) {
-        throw new ForbiddenException(
-          'Your generation credits have expired. Buy a credit pack to generate more tailored resumes.',
-        );
-      }
-      throw new ForbiddenException(
-        'Not enough generation credits remaining. Buy a credit pack to generate more tailored resumes.',
-      );
-    }
-    return true;
+  private reserveGenerationCredit(userId: string, plan: string, amount: number): Promise<boolean> {
+    return reserveGenerationCredit(this.prisma, userId, plan, amount);
   }
 
   private async performGeneration(
@@ -451,6 +521,7 @@ export class ResumeGenerationsService {
     const projectSectionItems = this.resolveFactItems(generated.projectItems, factsById, 'PROJECT')
       .sort((a, b) => compareFactsByStartDateDesc(a.fact, b.fact))
       .map(({ fact, bullets }) => buildItemFromFact(fact, bullets));
+    const seenAchievementFactIds = new Set<string>();
     const standaloneAchievements = generated.achievements
       .filter((entry) => {
         const fact = factsById.get(entry.factId);
@@ -458,9 +529,31 @@ export class ResumeGenerationsService {
           this.logger.warn(`Dropping achievement with unresolvable factId ${entry.factId}`);
           return false;
         }
+        if (seenAchievementFactIds.has(entry.factId)) {
+          this.logger.warn(`Dropping duplicate achievement for factId ${entry.factId}`);
+          return false;
+        }
+        seenAchievementFactIds.add(entry.factId);
         return true;
       })
       .map((entry) => entry.bullet);
+
+    // Claude was sent real EXPERIENCE/PROJECT/ACHIEVEMENT facts but every
+    // single one failed to resolve (unrecognized/garbage factIds, or
+    // Claude returned empty arrays for all three) -- a near-blank resume
+    // slipping through here would still get the credit that was already
+    // charged for it. Throwing routes this into the same refund path as
+    // a thrown Claude call.
+    if (
+      facts.length > 0 &&
+      experienceSectionItems.length === 0 &&
+      projectSectionItems.length === 0 &&
+      standaloneAchievements.length === 0
+    ) {
+      throw new Error(
+        `generateTailoredResume returned no usable content for ${facts.length} supplied facts -- every factId failed to resolve`,
+      );
+    }
 
     // Splice everything into the same section order as before: Skills
     // right after the summary, Experience/Projects, then
@@ -551,18 +644,7 @@ export class ResumeGenerationsService {
     factsById: Map<string, ExperienceFact>,
     expectedType: 'EXPERIENCE' | 'PROJECT',
   ): { fact: ExperienceFact; bullets: string[] }[] {
-    const resolved: { fact: ExperienceFact; bullets: string[] }[] = [];
-    for (const entry of entries) {
-      const fact = factsById.get(entry.factId);
-      if (!fact || fact.type !== expectedType) {
-        this.logger.warn(
-          `Dropping ${expectedType.toLowerCase()} item with unresolvable factId ${entry.factId}`,
-        );
-        continue;
-      }
-      resolved.push({ fact, bullets: entry.bullets });
-    }
-    return resolved;
+    return resolveFactItems(entries, factsById, expectedType);
   }
 
   async findAllForUser(userId: string, page = 1, limit = 10) {
