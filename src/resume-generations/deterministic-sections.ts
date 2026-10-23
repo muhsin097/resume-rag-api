@@ -103,16 +103,19 @@ function buildEntrySection(
 // Grouped into categories (one item per category, title = category name)
 // rather than one flat comma-separated line -- category is assigned once,
 // when a skill is first created (see ExperienceItemsService), not here, so
-// this stays a pure/sync function with no Claude call of its own. A group's
-// position is its first (JD-match-sorted) skill's position, so categories
-// containing JD-relevant skills still surface first. Uncategorized skills
-// (briefly, between creation and classification, or if that call ever
-// failed) fall into an unlabeled trailing bucket rather than being dropped.
+// this stays a pure/sync function with no Claude call of its own. A named
+// category's position is its first (JD-match-sorted) skill's position, so
+// categories containing JD-relevant skills still surface first.
 //
-// extraTitles: approved keywords from the "add missing keyword" flow that
-// the candidate chose NOT to save permanently to their profile -- not a
-// real stored fact, so no category to group by. Always an unlabeled,
-// leading item, since they were specifically requested for this JD.
+// Two kinds of skill have no real category to group by: ones that are
+// still uncategorized in the DB (briefly, between creation and
+// classification, or if that call ever failed) and extraTitles --
+// approved keywords from the "add missing keyword" flow that the
+// candidate chose NOT to save permanently to their profile, so there was
+// never a row to categorize in the first place. Both land in one labeled
+// "Other" group, always LAST regardless of JD relevance -- a skill
+// without a real category shouldn't visually outrank skills that do have
+// one just because it happens to match this JD's wording.
 function buildSkillsSection(
   skills: CatalogFact[],
   jobDescription: string,
@@ -127,29 +130,24 @@ function buildSkillsSection(
   });
 
   const groups = new Map<string, string[]>();
+  const other: string[] = [...extraTitles];
   for (const skill of sorted) {
-    const category = skill.category?.trim() || '';
+    const category = skill.category?.trim();
+    if (!category) {
+      other.push(skill.title);
+      continue;
+    }
     const bucket = groups.get(category);
     if (bucket) bucket.push(skill.title);
     else groups.set(category, [skill.title]);
   }
 
-  // Uncategorized skills (no category yet, or the classification call
-  // failed/never ran for them) are pulled out and rendered last rather
-  // than wherever they happen to fall in DB fetch order -- categorized
-  // groups first, any leftovers trailing at the bottom.
-  const uncategorized = groups.get('');
-  groups.delete('');
-
   const items: Section['items'] = [];
-  if (extraTitles.length > 0) {
-    items.push({ title: '', subtitle: null, bullets: extraTitles });
-  }
   for (const [category, titles] of groups) {
     items.push({ title: category, subtitle: null, bullets: titles });
   }
-  if (uncategorized) {
-    items.push({ title: '', subtitle: null, bullets: uncategorized });
+  if (other.length > 0) {
+    items.push({ title: 'Other', subtitle: null, bullets: other });
   }
 
   return { heading: 'Skills', items };
