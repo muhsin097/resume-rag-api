@@ -78,7 +78,6 @@ export interface ExtractedResumeData {
 
 const EXTRACTION_TOOL_NAME = 'record_experience_items';
 const ANALYSIS_TOOL_NAME = 'record_match_analysis';
-const SKILL_CLASSIFICATION_TOOL_NAME = 'record_skill_classifications';
 const SKILL_CATEGORIZATION_TOOL_NAME = 'record_skill_categories';
 const GENERATION_TOOL_NAME = 'record_tailored_resume';
 const JOB_META_TOOL_NAME = 'record_job_meta';
@@ -90,12 +89,6 @@ export interface MatchAnalysis {
   fitScore: number;
   matchedKeywords: string[];
   missingKeywords: string[];
-}
-
-export interface SkillClassification {
-  keyword: string;
-  approved: boolean;
-  normalizedTitle: string;
 }
 
 export interface SkillCategoryAssignment {
@@ -372,76 +365,6 @@ export class ClaudeClient {
       matchedKeywords: input.matchedKeywords ?? [],
       missingKeywords: input.missingKeywords ?? [],
     };
-  }
-
-  // Lets a candidate request specific missing JD keywords be added to
-  // their Skills list (the "+" button on a red/missing keyword). This is
-  // a narrow classification call, NOT a resume generation -- it never
-  // touches Experience/Summary, so there's no risk of a rejected or
-  // approved keyword leaking into fabricated experience claims. Approved
-  // keywords are spliced into the deterministic Skills list (and
-  // optionally persisted as a real SKILL fact) by the caller; this method
-  // only decides yes/no per keyword.
-  async classifySkillKeywords(params: {
-    keywords: string[];
-    candidateSkills: string[];
-    candidateExperienceSummary: string;
-  }): Promise<SkillClassification[]> {
-    if (params.keywords.length === 0) return [];
-
-    const response = await this.client.messages.create({
-      model: this.model,
-      max_tokens: 1024,
-      // temperature: 0 minimizes run-to-run variance (not a guarantee of
-      // an identical decision every time) -- aimed at keeping the same
-      // keyword against the same profile from flipping approve/reject on
-      // sampling noise alone.
-      temperature: 0,
-      system:
-        'You decide whether a candidate may honestly add a requested keyword to their Skills list, given their real skills and experience. Infer their broad professional domain from their real skills/experience (e.g. software engineering, nursing, accounting) and APPROVE any requested keyword that is a genuine skill/technology/tool/methodology within that same broad domain -- it does not need to be a close specialization of something they already listed. A software engineer who knows Node.js and React asking to add "Kubernetes", "LLMs", "RAG", or "vector databases" is plausible even with zero prior AI/infra listed -- professionals routinely pick up adjacent tools and concepts in their own field, and the resume-tailoring context here (a software product) makes AI/ML tooling an especially normal adjacent area for any developer. REJECT only when: (a) the keyword is from a genuinely different, unrelated domain with no plausible connection to their field (e.g. a software engineer adding "cooking", "veterinary medicine", "truck driving"), or (b) it is not a real skill/technology/qualification at all (nonsense, a joke, random text). When genuinely torn between "same domain" and "unrelated", approve -- the bar is "would this be a dishonest claim," not "have they specifically proven this exact tool." Call the record_skill_classifications tool exactly once.',
-      tools: [
-        {
-          name: SKILL_CLASSIFICATION_TOOL_NAME,
-          description: 'Record yes/no for each requested keyword',
-          input_schema: {
-            type: 'object',
-            properties: {
-              classifications: {
-                type: 'array',
-                items: {
-                  type: 'object',
-                  properties: {
-                    keyword: { type: 'string', description: 'Exactly the keyword as given.' },
-                    approved: { type: 'boolean' },
-                    normalizedTitle: {
-                      type: 'string',
-                      description: 'Clean skill name to store if approved, e.g. "C++" not "c plus plus". Same as keyword if already clean.',
-                    },
-                  },
-                  required: ['keyword', 'approved', 'normalizedTitle'],
-                },
-              },
-            },
-            required: ['classifications'],
-          },
-        },
-      ],
-      tool_choice: { type: 'tool', name: SKILL_CLASSIFICATION_TOOL_NAME },
-      messages: [
-        {
-          role: 'user',
-          content: `Candidate's real skills: ${params.candidateSkills.join(', ') || '(none listed)'}\n\nCandidate's experience summary: ${params.candidateExperienceSummary || '(none)'}\n\nRequested keywords to classify: ${params.keywords.join(', ')}`,
-        },
-      ],
-    });
-
-    const toolUseBlock = response.content.find(
-      (block) => block.type === 'tool_use' && block.name === SKILL_CLASSIFICATION_TOOL_NAME,
-    );
-    if (toolUseBlock?.type !== 'tool_use') return [];
-
-    const input = toolUseBlock.input as { classifications?: SkillClassification[] };
-    return input.classifications ?? [];
   }
 
   // Groups a candidate's skills into resume-style categories ("Languages &

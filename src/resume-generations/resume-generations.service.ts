@@ -1,12 +1,22 @@
-import { ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { VectorService } from '../vector/vector.service.js';
 import { ClaudeClient } from '../llm/claude.client.js';
-import type { ExperienceFact, ResumeDocument } from '../llm/claude.client.js';
+import type { ExperienceFact, MatchAnalysis, ResumeDocument } from '../llm/claude.client.js';
 import { CreateResumeGenerationDto } from './dto/create-resume-generation.dto.js';
+import { AddSkillDto } from './dto/add-skill.dto.js';
 import { ExperienceType } from '../generated/prisma/enums.js';
 import { buildContactLine, buildDeterministicSections, buildItemFromFact } from './deterministic-sections.js';
 import { ExperienceItemsService } from '../experience-items/experience-items.service.js';
+
+// Credit unit is finer than "one generation" -- a full regenerate does
+// the expensive bullet-writing call plus a rescore, a standalone rescore
+// only reruns analyzeMatch (genuinely half the cost, since the Skills
+// list is never sent to the bullet-writing call at all -- see
+// addSkillToGeneration). Adding a skill itself is free: it's a plain DB
+// write, no LLM call of any kind.
+const FULL_GENERATION_COST = 2;
+const RESCORE_COST = 1;
 
 // Education/Skills/Languages/Certifications are built deterministically in
 // code (deterministic-sections.ts) -- they never need JD-aware rewriting,
@@ -55,6 +65,31 @@ function keywordAppearsInResume(keyword: string, resumeText: string): boolean {
   const escaped = trimmed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const pattern = escaped.replace(/[\s\-/.]+/g, '[\\s\\-/.]*');
   return new RegExp(`\\b${pattern}\\b`, 'i').test(resumeText);
+}
+
+// Shared by a fresh generation and a standalone rescore -- reconciles
+// Claude's matched/missing lists against the actual resume text (the
+// keywordAppearsInResume safety net), then derives keywordCoverage
+// deterministically from the result rather than trusting the model's own
+// ratio. Used identically in both places so a rescore after adding a
+// skill produces the exact same kind of score a fresh generation would.
+function reconcileKeywordMatches(
+  analysis: MatchAnalysis,
+  resumeText: string,
+): { matchedKeywords: string[]; missingKeywords: string[]; keywordCoverage: number } {
+  const matchedKeywords = [...analysis.matchedKeywords];
+  const missingKeywords: string[] = [];
+  for (const keyword of analysis.missingKeywords) {
+    if (keywordAppearsInResume(keyword, resumeText)) {
+      matchedKeywords.push(keyword);
+    } else {
+      missingKeywords.push(keyword);
+    }
+  }
+  const totalKeywords = matchedKeywords.length + missingKeywords.length;
+  const keywordCoverage =
+    totalKeywords === 0 ? analysis.fitScore : Math.round((matchedKeywords.length / totalKeywords) * 100);
+  return { matchedKeywords, missingKeywords, keywordCoverage };
 }
 
 // Claude returns Experience/Project facts in JD-relevance order, not date
@@ -115,21 +150,22 @@ export class ResumeGenerationsService {
     // not a separate check-then-act (read balance, decide, increment
     // later), which would let two concurrent requests both read the same
     // stale balance, both pass, and both get charged to Claude even
-    // though only one credit was actually available. The WHERE clause and
-    // the decrement happen in the same statement, so Postgres's row lock
-    // serializes concurrent attempts correctly -- the second one re-reads
-    // the just-committed balance before its own WHERE is evaluated.
-    const creditReserved = await this.reserveGenerationCredit(userId, user.plan);
+    // though only enough credits for one was actually available. The
+    // WHERE clause and the decrement happen in the same statement, so
+    // Postgres's row lock serializes concurrent attempts correctly -- the
+    // second one re-reads the just-committed balance before its own
+    // WHERE is evaluated.
+    const creditReserved = await this.reserveGenerationCredit(userId, user.plan, FULL_GENERATION_COST);
 
     try {
       return await this.performGeneration(userId, user, dto);
     } catch (err) {
       if (creditReserved) {
         await this.prisma.user
-          .update({ where: { id: userId }, data: { creditsBalance: { increment: 1 } } })
+          .update({ where: { id: userId }, data: { creditsBalance: { increment: FULL_GENERATION_COST } } })
           .catch((refundErr) => {
             this.logger.error(
-              `Failed to refund a reserved credit for user ${userId} after a failed generation`,
+              `Failed to refund reserved credits for user ${userId} after a failed generation`,
               refundErr instanceof Error ? refundErr.stack : refundErr,
             );
           });
@@ -138,7 +174,105 @@ export class ResumeGenerationsService {
     }
   }
 
-  private async reserveGenerationCredit(userId: string, plan: string): Promise<boolean> {
+  // Add a confirmed skill to an existing generation's Skills section --
+  // no LLM call, no credit charge. The skill never reaches
+  // generateTailoredResume (it's excluded from the facts array there), so
+  // it's architecturally impossible for this to affect Experience/Project
+  // bullets -- only the deterministic Skills line changes. Score is left
+  // as-is; call rescoreGeneration separately (1 credit) to refresh it.
+  async addSkillToGeneration(userId: string, generationId: string, dto: AddSkillDto) {
+    const generation = await this.findOneForUser(userId, generationId);
+    if (!generation.structuredContent) {
+      throw new BadRequestException(
+        'This resume predates structured editing and cannot have skills added directly.',
+      );
+    }
+
+    const title = dto.keyword.trim();
+    if (!title) {
+      throw new BadRequestException('Keyword cannot be empty.');
+    }
+
+    const extraSkillTitles: string[] = [];
+    if (dto.saveToProfile) {
+      try {
+        await this.experienceItemsService.create(userId, { type: ExperienceType.SKILL, title });
+      } catch {
+        // Already exists as a SKILL fact (ConflictException from the
+        // dedupe check) -- nothing to add, it'll show up below via the
+        // fresh DB read regardless.
+      }
+    } else {
+      extraSkillTitles.push(title);
+    }
+
+    // Re-fetch deterministic items fresh (now includes the just-created
+    // SKILL row, if saveToProfile) and rebuild only the Skills section --
+    // every other section (Experience/Projects/Education/etc.) in the
+    // stored document is left untouched.
+    const deterministicItems = await this.prisma.experienceItem.findMany({
+      where: { userId, type: { in: DETERMINISTIC_TYPES } },
+    });
+    const { skills } = buildDeterministicSections(deterministicItems, generation.jobDescription, extraSkillTitles);
+
+    const doc = generation.structuredContent as unknown as ResumeDocument;
+    const nonSkillSections = doc.sections.filter((section) => section.heading !== 'Skills');
+    // Skills always goes first, right after the summary -- same position
+    // performGeneration originally placed it in.
+    const updatedDoc: ResumeDocument = {
+      ...doc,
+      sections: skills ? [skills, ...nonSkillSections] : nonSkillSections,
+    };
+    const updatedContent = flattenResumeDocument(updatedDoc);
+
+    return this.prisma.resumeGeneration.update({
+      where: { id: generationId },
+      data: { structuredContent: updatedDoc as object, generatedContent: updatedContent },
+    });
+  }
+
+  // Standalone rescore -- 1 credit, reruns only analyzeMatch against the
+  // generation's current content (which may already include skills added
+  // for free since the original generation). Never calls
+  // generateTailoredResume: bullets can't be affected by a Skills-only
+  // change, so re-running the expensive call would just reproduce the
+  // same output at temperature:0 for no benefit.
+  async rescoreGeneration(userId: string, generationId: string) {
+    const user = await this.prisma.user.findUniqueOrThrow({ where: { id: userId } });
+    const generation = await this.findOneForUser(userId, generationId);
+
+    const creditReserved = await this.reserveGenerationCredit(userId, user.plan, RESCORE_COST);
+
+    try {
+      const analysis = await this.claudeClient.analyzeMatch({
+        jobDescription: generation.jobDescription,
+        resumeContent: generation.generatedContent,
+      });
+      const { matchedKeywords, missingKeywords, keywordCoverage } = reconcileKeywordMatches(
+        analysis,
+        generation.generatedContent,
+      );
+
+      return await this.prisma.resumeGeneration.update({
+        where: { id: generationId },
+        data: { fitScore: analysis.fitScore, keywordCoverage, matchedKeywords, missingKeywords },
+      });
+    } catch (err) {
+      if (creditReserved) {
+        await this.prisma.user
+          .update({ where: { id: userId }, data: { creditsBalance: { increment: RESCORE_COST } } })
+          .catch((refundErr) => {
+            this.logger.error(
+              `Failed to refund reserved credits for user ${userId} after a failed rescore`,
+              refundErr instanceof Error ? refundErr.stack : refundErr,
+            );
+          });
+      }
+      throw err;
+    }
+  }
+
+  private async reserveGenerationCredit(userId: string, plan: string, amount: number): Promise<boolean> {
     // PREMIUM is the legacy/admin-only unlimited grandfather flag --
     // nothing to reserve, never decremented.
     if (plan === 'PREMIUM') return false;
@@ -151,10 +285,10 @@ export class ResumeGenerationsService {
     const reserved = await this.prisma.user.updateMany({
       where: {
         id: userId,
-        creditsBalance: { gt: 0 },
+        creditsBalance: { gte: amount },
         OR: [{ creditsExpireAt: null }, { creditsExpireAt: { gt: now } }],
       },
-      data: { creditsBalance: { decrement: 1 } },
+      data: { creditsBalance: { decrement: amount } },
     });
     if (reserved.count === 0) {
       // Distinguish "you have an expired balance" from "you have nothing"
@@ -170,7 +304,7 @@ export class ResumeGenerationsService {
         );
       }
       throw new ForbiddenException(
-        'No generation credits remaining. Buy a credit pack to generate more tailored resumes.',
+        'Not enough generation credits remaining. Buy a credit pack to generate more tailored resumes.',
       );
     }
     return true;
@@ -218,59 +352,11 @@ export class ResumeGenerationsService {
       .map((match) => rankedItems.find((item) => item.id === match.id))
       .filter((item): item is NonNullable<typeof item> => Boolean(item));
 
-    // deterministicItems is mutable: an approved "add missing keyword" request
-    // with saveToProfile=true appends a freshly-persisted SKILL row below, so
-    // it flows into buildDeterministicSections exactly like any other fact.
-    const deterministicItems = [...rawDeterministicItems];
-    const extraSkillTitles: string[] = [];
-    // Returned (not persisted) so the caller can tell the candidate exactly
-    // what happened to each requested keyword -- highlight what landed in
-    // the resume, and surface a clear "couldn't add" reason for the rest,
-    // rather than silently dropping rejected ones.
-    const keywordResults: { keyword: string; normalizedTitle: string; approved: boolean }[] = [];
-    if (dto.requestedSkills && dto.requestedSkills.length > 0) {
-      const candidateSkills = deterministicItems
-        .filter((item) => item.type === ExperienceType.SKILL)
-        .map((item) => item.title);
-      const candidateExperienceSummary = [...orderedRankedItems, ...achievementItems]
-        .map((item) => item.content)
-        .filter((text): text is string => Boolean(text))
-        .join(' ');
-      const classifications = await this.claudeClient.classifySkillKeywords({
-        keywords: dto.requestedSkills.map((requested) => requested.keyword),
-        candidateSkills,
-        candidateExperienceSummary,
-      });
-      for (const requested of dto.requestedSkills) {
-        const classification = classifications.find(
-          (c) => c.keyword.toLowerCase() === requested.keyword.toLowerCase(),
-        );
-        if (!classification?.approved) {
-          keywordResults.push({
-            keyword: requested.keyword,
-            normalizedTitle: requested.keyword,
-            approved: false,
-          });
-          continue;
-        }
-        const normalizedTitle = classification.normalizedTitle || requested.keyword;
-        keywordResults.push({ keyword: requested.keyword, normalizedTitle, approved: true });
-        if (requested.saveToProfile) {
-          try {
-            const created = await this.experienceItemsService.create(userId, {
-              type: ExperienceType.SKILL,
-              title: normalizedTitle,
-            });
-            deterministicItems.push(created);
-          } catch {
-            // Already exists as a SKILL fact (ConflictException from the
-            // dedupe check) -- nothing to add, carry on.
-          }
-        } else {
-          extraSkillTitles.push(normalizedTitle);
-        }
-      }
-    }
+    // Adding a JD-relevant skill after the fact is a separate, free,
+    // zero-LLM action now (see addSkillToGeneration) -- a fresh
+    // generation always starts from exactly the candidate's current
+    // profile, no requested-skills plumbing needed here.
+    const deterministicItems = rawDeterministicItems;
 
     // Everything considered for this generation, for provenance/debugging
     // (retrievedItemIds) -- deterministic items included even though they
@@ -322,11 +408,7 @@ export class ResumeGenerationsService {
     // Education/Languages/Certifications, then a trailing standalone
     // Achievements section (only the achievements that didn't get folded
     // into a role above).
-    const { skills, rest } = buildDeterministicSections(
-      deterministicItems,
-      dto.jobDescription,
-      extraSkillTitles,
-    );
+    const { skills, rest } = buildDeterministicSections(deterministicItems, dto.jobDescription);
     const structuredContent: ResumeDocument = {
       name: user.name,
       title: generated.title,
@@ -350,34 +432,15 @@ export class ResumeGenerationsService {
       resumeContent: generatedContent,
     });
 
-    // Safety net: on a long, dense skills line (30+ comma-separated items)
-    // the model sometimes loses track of one it already saw and reports it
-    // as missing anyway -- e.g. "TypeScript" marked missing from a resume
-    // whose own Skills line contains it verbatim. A keyword that's actually
-    // present (allowing for "CI/CD" vs "CI-CD" style formatting variants)
-    // is reclassified as matched here, deterministically, rather than
-    // trusting the model's recall on every single keyword in a long list.
-    const matchedKeywords = [...analysis.matchedKeywords];
-    const missingKeywords: string[] = [];
-    for (const keyword of analysis.missingKeywords) {
-      if (keywordAppearsInResume(keyword, generatedContent)) {
-        matchedKeywords.push(keyword);
-      } else {
-        missingKeywords.push(keyword);
-      }
-    }
-
-    // keywordCoverage is computed here, not trusted from the model -- it's
-    // deterministically derived from the same (post-reconciliation) lists
-    // shown to the user as chips, so "everything matched" always means
-    // exactly 100 and the number is always explainable. fitScore, by
-    // contrast, is kept as Claude's own holistic judgment, used as-is --
-    // it's a deliberately separate signal (overall candidate fit, not just
-    // literal JD keyword presence) rather than a second copy of the same
-    // ratio.
-    const totalKeywords = matchedKeywords.length + missingKeywords.length;
-    const keywordCoverage =
-      totalKeywords === 0 ? analysis.fitScore : Math.round((matchedKeywords.length / totalKeywords) * 100);
+    // keywordCoverage is computed here, not trusted from the model -- see
+    // reconcileKeywordMatches. fitScore, by contrast, is kept as Claude's
+    // own holistic judgment, used as-is -- it's a deliberately separate
+    // signal (overall candidate fit, not just literal JD keyword
+    // presence) rather than a second copy of the same ratio.
+    const { matchedKeywords, missingKeywords, keywordCoverage } = reconcileKeywordMatches(
+      analysis,
+      generatedContent,
+    );
 
     const generation = await this.prisma.resumeGeneration.create({
       data: {
@@ -399,12 +462,7 @@ export class ResumeGenerationsService {
     // reserveGenerationCredit, before any of the Claude calls above --
     // nothing left to charge here now that the generation has actually
     // succeeded.
-
-    // keywordResults is request-scoped feedback, not a stored fact about
-    // the generation -- attached here rather than persisted, so a candidate
-    // viewing this same generation later (e.g. from History) doesn't see a
-    // stale "just added" callout from a request that's long since settled.
-    return { ...generation, keywordResults };
+    return generation;
   }
 
   // Validates every factId Claude returned against the facts actually

@@ -4,6 +4,7 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator.js';
 import type { AuthenticatedUser } from '../auth/decorators/current-user.decorator.js';
 import { ResumeGenerationsService } from './resume-generations.service.js';
 import { CreateResumeGenerationDto } from './dto/create-resume-generation.dto.js';
+import { AddSkillDto } from './dto/add-skill.dto.js';
 
 @UseGuards(JwtAuthGuard)
 @Controller('resume-generations')
@@ -36,5 +37,22 @@ export class ResumeGenerationsController {
   @Get(':id')
   findOne(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     return this.resumeGenerationsService.findOneForUser(user.id, id);
+  }
+
+  // Free -- no LLM call, no credit charge. See
+  // ResumeGenerationsService.addSkillToGeneration.
+  @Post(':id/skills')
+  addSkill(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() dto: AddSkillDto,
+  ) {
+    return this.resumeGenerationsService.addSkillToGeneration(user.id, id, dto);
+  }
+
+  // 1 credit -- reruns only analyzeMatch, never the bullet-writing call.
+  @Post(':id/rescore')
+  rescore(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
+    return this.resumeGenerationsService.rescoreGeneration(user.id, id);
   }
 }

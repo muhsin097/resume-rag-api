@@ -74,13 +74,16 @@ model User {
   // model, and because the migration that introduced creditsBalance
   // backfilled from this value.
   freeGenerationsUsed Int                @default(0) @map("free_generations_used")
-  // The actual gate for a FREE-plan user: decremented by exactly 1, as
-  // one atomic conditional UPDATE (WHERE credits_balance > 0), immediately
-  // before the Claude calls for a generation start -- never check-then-act
+  // The actual gate for a FREE-plan user. Unit is deliberately finer than
+  // "one generation" -- a full regenerate costs 2, a match-rescore costs
+  // 1 (rescore only reruns analyzeMatch, never the expensive bullet-
+  // writing call, so it's genuinely half the cost). Decremented as one
+  // atomic conditional UPDATE (WHERE credits_balance >= amount),
+  // immediately before the relevant Claude call -- never check-then-act
   // across two separate statements, which would let two concurrent
   // requests both pass a check against the same stale balance. Refunded
   // (incremented back) if the generation then fails after reservation.
-  creditsBalance      Int                @default(2) @map("credits_balance")
+  creditsBalance      Int                @default(4) @map("credits_balance")
   // Null means "no expiry yet" (the initial free-trial credits never
   // expire on their own). Set to now()+90d the moment a paid pack is
   // credited, and simply overwritten (not extended) by each subsequent
