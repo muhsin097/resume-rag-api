@@ -4,7 +4,7 @@ import { VectorService } from '../vector/vector.service.js';
 import { ClaudeClient } from '../llm/claude.client.js';
 import type { ExperienceFact, MatchAnalysis, ResumeDocument } from '../llm/claude.client.js';
 import { CreateResumeGenerationDto } from './dto/create-resume-generation.dto.js';
-import { AddSkillDto } from './dto/add-skill.dto.js';
+import { AddSkillsDto } from './dto/add-skill.dto.js';
 import { ExperienceType } from '../generated/prisma/enums.js';
 import { buildContactLine, buildDeterministicSections, buildItemFromFact } from './deterministic-sections.js';
 import { ExperienceItemsService } from '../experience-items/experience-items.service.js';
@@ -180,7 +180,18 @@ export class ResumeGenerationsService {
   // it's architecturally impossible for this to affect Experience/Project
   // bullets -- only the deterministic Skills line changes. Score is left
   // as-is; call rescoreGeneration separately (1 credit) to refresh it.
-  async addSkillToGeneration(userId: string, generationId: string, dto: AddSkillDto) {
+  //
+  // Accepts a batch (not one keyword per call) specifically so the
+  // saveToProfile ones go through ExperienceItemsService.createMany --
+  // ONE Voyage embed call and ONE Claude categorize call for the whole
+  // batch, same as resume import/bulk-skill-add. Calling .create() once
+  // per keyword (the original version of this method) meant 3-4 staged
+  // keywords fired 3-4 separate Voyage requests back to back, straight
+  // into the free-tier 3-requests/minute cap -- the ones that got
+  // rate-limited threw, and a blanket catch{} swallowed the failure
+  // silently, so the UI reported "added" for keywords that were never
+  // actually persisted.
+  async addSkillsToGeneration(userId: string, generationId: string, dto: AddSkillsDto) {
     const generation = await this.findOneForUser(userId, generationId);
     if (!generation.structuredContent) {
       throw new BadRequestException(
@@ -188,28 +199,36 @@ export class ResumeGenerationsService {
       );
     }
 
-    const title = dto.keyword.trim();
-    if (!title) {
-      throw new BadRequestException('Keyword cannot be empty.');
-    }
-
+    const toSave: string[] = [];
     const extraSkillTitles: string[] = [];
-    if (dto.saveToProfile) {
-      try {
-        await this.experienceItemsService.create(userId, { type: ExperienceType.SKILL, title });
-      } catch {
-        // Already exists as a SKILL fact (ConflictException from the
-        // dedupe check) -- nothing to add, it'll show up below via the
-        // fresh DB read regardless.
+    for (const entry of dto.skills) {
+      const title = entry.keyword.trim();
+      if (!title) continue;
+      if (entry.saveToProfile) {
+        toSave.push(title);
+      } else {
+        extraSkillTitles.push(title);
       }
-    } else {
-      extraSkillTitles.push(title);
     }
 
-    // Re-fetch deterministic items fresh (now includes the just-created
-    // SKILL row, if saveToProfile) and rebuild only the Skills section --
-    // every other section (Experience/Projects/Education/etc.) in the
-    // stored document is left untouched.
+    if (toSave.length > 0) {
+      // createMany silently skips anything already in the profile
+      // (same type/title/organization) rather than throwing -- the
+      // correct, intentional dedupe behavior, not a blanket catch
+      // masking real failures. Anything else it throws (a genuine
+      // Voyage/Claude failure) now propagates out of this method
+      // instead of being swallowed, so the caller sees a real error
+      // rather than a false "success".
+      await this.experienceItemsService.createMany(
+        userId,
+        toSave.map((title) => ({ type: ExperienceType.SKILL, title })),
+      );
+    }
+
+    // Re-fetch deterministic items fresh (now includes whatever was just
+    // persisted above) and rebuild only the Skills section -- every
+    // other section (Experience/Projects/Education/etc.) in the stored
+    // document is left untouched.
     const deterministicItems = await this.prisma.experienceItem.findMany({
       where: { userId, type: { in: DETERMINISTIC_TYPES } },
     });

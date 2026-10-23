@@ -4,7 +4,7 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator.js';
 import type { AuthenticatedUser } from '../auth/decorators/current-user.decorator.js';
 import { ResumeGenerationsService } from './resume-generations.service.js';
 import { CreateResumeGenerationDto } from './dto/create-resume-generation.dto.js';
-import { AddSkillDto } from './dto/add-skill.dto.js';
+import { AddSkillsDto } from './dto/add-skill.dto.js';
 
 @UseGuards(JwtAuthGuard)
 @Controller('resume-generations')
@@ -39,15 +39,16 @@ export class ResumeGenerationsController {
     return this.resumeGenerationsService.findOneForUser(user.id, id);
   }
 
-  // Free -- no LLM call, no credit charge. See
-  // ResumeGenerationsService.addSkillToGeneration.
+  // Free -- no LLM call, no credit charge. Takes a batch so saveToProfile
+  // persistence can be embedded/categorized in one call each, not one
+  // per keyword -- see ResumeGenerationsService.addSkillsToGeneration.
   @Post(':id/skills')
-  addSkill(
+  addSkills(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
-    @Body() dto: AddSkillDto,
+    @Body() dto: AddSkillsDto,
   ) {
-    return this.resumeGenerationsService.addSkillToGeneration(user.id, id, dto);
+    return this.resumeGenerationsService.addSkillsToGeneration(user.id, id, dto);
   }
 
   // 1 credit -- reruns only analyzeMatch, never the bullet-writing call.
