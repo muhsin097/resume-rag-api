@@ -78,6 +78,7 @@ export interface ExtractedResumeData {
 
 const EXTRACTION_TOOL_NAME = 'record_experience_items';
 const ANALYSIS_TOOL_NAME = 'record_match_analysis';
+const JOB_KEYWORDS_TOOL_NAME = 'record_job_keywords';
 const SKILL_CATEGORIZATION_TOOL_NAME = 'record_skill_categories';
 const GENERATION_TOOL_NAME = 'record_tailored_resume';
 const JOB_META_TOOL_NAME = 'record_job_meta';
@@ -291,31 +292,80 @@ export class ClaudeClient {
     return toolUseBlock.input as GeneratedResumeContent;
   }
 
-  // Forced tool-use, same pattern as extraction -- compares the JD against
-  // the resume that was just generated and scores how well they match.
-  // Keywords are required to be verbatim substrings of the job description
-  // text specifically so the frontend can highlight them by exact match.
-  async analyzeMatch(params: {
+  // Split from the old combined analyzeMatch into two steps specifically
+  // so the "which keywords matter" list can be cached per-JD (see
+  // ResumeGenerationsService.getOrExtractJobKeywords) and reused across
+  // every generate/rescore against that same posting. Previously, the
+  // keyword list was re-derived from scratch on every single call --
+  // temperature:0 reduces but doesn't eliminate run-to-run variance in a
+  // judgment call like "how finely to split a compound requirement," so
+  // regenerating against an unchanged JD and an unchanged resume could
+  // still show a visibly different "missing keywords" list, which read
+  // as a confusing, unexplained score swing. This method is the
+  // extraction half only -- no resume involved at all, independent of
+  // any candidate.
+  async extractJobKeywords(jobDescription: string): Promise<string[]> {
+    const response = await this.client.messages.create({
+      model: this.model,
+      max_tokens: 1024,
+      temperature: 0,
+      system:
+        'Extract concrete, resume-checkable keywords from a job description and call the record_job_keywords tool exactly once. Extract ONLY concrete, resume-checkable keywords: a specific skill, technology, tool, framework, certification, methodology, or short qualification like years of experience (roughly 1-4 words, a genuine noun phrase a candidate could literally put in a Skills list). If a requirement sentence lists several things (e.g. "8-10 years selling Microsoft solutions across the Microsoft portfolio"), split it into separate keywords ("8-10 years of experience", "Microsoft solutions", "Microsoft portfolio") rather than keeping it as one long phrase. Never extract a behavioral description, competency statement, or responsibility sentence, even a short one -- reject things like "operates with no supervision", "balances business objectives", "manages difficult and complex situations", "masters all phases of the software development lifecycle" -- these describe HOW someone works, not a checkable skill, and would look absurd added to a Skills list. Some job descriptions (especially competency-framework-style postings) are written almost entirely in this behavioral-prose style with few concrete skills mentioned -- when that happens, it is correct and expected to extract FEWER keywords overall. Do not force a behavioral sentence into a keyword just to have something to extract.',
+      tools: [
+        {
+          name: JOB_KEYWORDS_TOOL_NAME,
+          description: 'Record the extracted keyword list for a job description',
+          input_schema: {
+            type: 'object',
+            properties: {
+              keywords: {
+                type: 'array',
+                items: { type: 'string' },
+                description:
+                  'Concrete, resume-checkable skills/technologies/tools/certifications/qualifications (1-4 words each) from the job description. Only things that genuinely matter for the role -- not every noun in the posting. Each entry must be copied verbatim as it appears in the job description text, so it can be located by exact substring match. A posting written mostly in behavioral/competency prose may legitimately yield few or no entries -- do not stretch a behavioral sentence into a fake keyword.',
+              },
+            },
+            required: ['keywords'],
+          },
+        },
+      ],
+      tool_choice: { type: 'tool', name: JOB_KEYWORDS_TOOL_NAME },
+      messages: [{ role: 'user', content: `Job description:\n${jobDescription}` }],
+    });
+
+    const toolUseBlock = response.content.find(
+      (block) => block.type === 'tool_use' && block.name === JOB_KEYWORDS_TOOL_NAME,
+    );
+    if (toolUseBlock?.type !== 'tool_use') return [];
+    const input = toolUseBlock.input as { keywords?: string[] };
+    return input.keywords ?? [];
+  }
+
+  // The classification half -- given a FIXED keyword list (from
+  // extractJobKeywords, cached), decides which of THOSE keywords the
+  // resume reflects. Deliberately returns only matchedKeywords, not a
+  // separately-generated missingKeywords -- the caller derives missing as
+  // the complement of the given keyword list, which guarantees every
+  // generation's missing list is always exactly "the stable keyword list
+  // minus whatever matched this specific resume," never a keyword Claude
+  // invented or silently dropped from either list.
+  async classifyKeywordMatches(params: {
     jobDescription: string;
+    keywords: string[];
     resumeContent: string;
-  }): Promise<MatchAnalysis> {
+  }): Promise<{ fitScore: number; matchedKeywords: string[] }> {
     const response = await this.client.messages.create({
       model: this.model,
       max_tokens: 1024,
       // temperature: 0 minimizes run-to-run variance, not a guarantee of
-      // an identical or factually-correct score every time. The reason
-      // for setting it here specifically: at the default temperature, the
-      // model picks a different subset of "important" keywords each call,
-      // so the score swings run-to-run even with no real change to the
-      // resume -- misleading as a before/after signal.
+      // an identical or factually-correct score every time.
       temperature: 0,
       system:
-        'You are an ATS (Applicant Tracking System) match analyzer. Compare a job description against a resume and call the record_match_analysis tool exactly once. Extract ONLY concrete, resume-checkable keywords: a specific skill, technology, tool, framework, certification, methodology, or short qualification like years of experience (roughly 1-4 words, a genuine noun phrase a candidate could literally put in a Skills list). If a requirement sentence lists several things (e.g. "8-10 years selling Microsoft solutions across the Microsoft portfolio"), split it into separate keywords ("8-10 years of experience", "Microsoft solutions", "Microsoft portfolio") rather than keeping it as one long phrase. Never extract a behavioral description, competency statement, or responsibility sentence, even a short one -- reject things like "operates with no supervision", "balances business objectives", "manages difficult and complex situations", "masters all phases of the software development lifecycle" -- these describe HOW someone works, not a checkable skill, and would look absurd added to a Skills list. Some job descriptions (especially competency-framework-style postings) are written almost entirely in this behavioral-prose style with few concrete skills mentioned -- when that happens, it is correct and expected to extract FEWER keywords overall. Do not force a behavioral sentence into a keyword just to have something to extract. Separately, also judge fitScore: your own holistic read of how well this candidate fits the role overall, using their FULL resume (seniority, depth of relevant experience, complementary skills, domain alignment) -- not a restatement of keyword coverage, which is computed elsewhere from your matched/missing lists. fitScore can legitimately sit above or below what pure keyword coverage would suggest. Give your genuine, precise assessment -- do not default to round numbers (ending in 0 or 5, or just below one like 92/82) out of habit; a fully honest assessment is just as likely to land on 77 or 88 as on 80 or 90.',
+        'You are an ATS (Applicant Tracking System) match analyzer. Call the record_match_analysis tool exactly once. You are given a fixed list of keywords already extracted from the job description -- decide which of THOSE EXACT keywords (copy verbatim from the given list) the resume reflects, directly or via a clear synonym. Do not invent new keywords and do not omit any decision -- every keyword in the given list is either reflected by the resume or it is not. Separately, also judge fitScore: your own holistic read of how well this candidate fits the role overall, using their FULL resume (seniority, depth of relevant experience, complementary skills, domain alignment) -- not a restatement of keyword coverage, which is computed elsewhere from the matched list. fitScore can legitimately sit above or below what pure keyword coverage would suggest. Give your genuine, precise assessment -- do not default to round numbers (ending in 0 or 5, or just below one like 92/82) out of habit; a fully honest assessment is just as likely to land on 77 or 88 as on 80 or 90.',
       tools: [
         {
           name: ANALYSIS_TOOL_NAME,
-          description:
-            'Record the keyword match analysis between a job description and a resume',
+          description: 'Record the keyword match classification and fit score',
           input_schema: {
             type: 'object',
             properties: {
@@ -324,22 +374,16 @@ export class ClaudeClient {
                 minimum: 0,
                 maximum: 100,
                 description:
-                  "Your own holistic 0-100 judgment of how well this candidate fits the role overall -- weigh their full resume (seniority, depth of relevant experience, complementary/adjacent skills, domain alignment), not just literal keyword presence in the job description. This is deliberately separate from keyword coverage (computed elsewhere from matchedKeywords/missingKeywords) and can legitimately sit above or below it. Give a genuinely precise number -- avoid defaulting to round or 'safe-looking' values (e.g. 70/80/90, or 72/82/92) out of habit.",
+                  "Your own holistic 0-100 judgment of how well this candidate fits the role overall -- weigh their full resume (seniority, depth of relevant experience, complementary/adjacent skills, domain alignment), not just literal keyword presence in the job description. This is deliberately separate from keyword coverage (computed elsewhere) and can legitimately sit above or below it. Give a genuinely precise number -- avoid defaulting to round or 'safe-looking' values (e.g. 70/80/90, or 72/82/92) out of habit.",
               },
               matchedKeywords: {
                 type: 'array',
                 items: { type: 'string' },
                 description:
-                  'Concrete, resume-checkable skills/technologies/tools/certifications/qualifications (1-4 words each) from the job description that the resume DOES reflect (directly or via a clear synonym) -- one item per entry. NOT behavioral descriptions, competencies, or responsibility sentences (e.g. never "operates with no supervision" or "balances business objectives") -- only things a candidate could genuinely list on a resume. Each entry must be copied verbatim as it appears in the job description text, so it can be located by exact substring match.',
-              },
-              missingKeywords: {
-                type: 'array',
-                items: { type: 'string' },
-                description:
-                  'Concrete, resume-checkable skills/technologies/tools/certifications/qualifications (1-4 words each) the job description asks for that the resume does NOT reflect -- same granularity and same exclusions as matchedKeywords (no behavioral/competency phrases). Each entry must be copied verbatim as it appears in the job description text. Only include things that genuinely matter for the role -- not every noun in the posting. A posting written mostly in behavioral/competency prose may legitimately yield few or no entries here -- do not stretch a behavioral sentence into a fake keyword.',
+                  'The subset of the GIVEN keyword list that the resume reflects (directly or via a clear synonym). Copy each entry verbatim from the given list -- do not paraphrase, split, combine, or invent keywords not in the given list.',
               },
             },
-            required: ['fitScore', 'matchedKeywords', 'missingKeywords'],
+            required: ['fitScore', 'matchedKeywords'],
           },
         },
       ],
@@ -347,7 +391,7 @@ export class ClaudeClient {
       messages: [
         {
           role: 'user',
-          content: `Job description:\n${params.jobDescription}\n\nResume:\n${params.resumeContent}`,
+          content: `Job description:\n${params.jobDescription}\n\nKeywords to classify:\n${params.keywords.join(', ')}\n\nResume:\n${params.resumeContent}`,
         },
       ],
     });
@@ -356,14 +400,30 @@ export class ClaudeClient {
       (block) => block.type === 'tool_use' && block.name === ANALYSIS_TOOL_NAME,
     );
     if (toolUseBlock?.type !== 'tool_use') {
-      return { fitScore: 0, matchedKeywords: [], missingKeywords: [] };
+      return { fitScore: 0, matchedKeywords: [] };
     }
+    const input = toolUseBlock.input as { fitScore?: number; matchedKeywords?: string[] };
+    return { fitScore: input.fitScore ?? 0, matchedKeywords: input.matchedKeywords ?? [] };
+  }
 
-    const input = toolUseBlock.input as Partial<MatchAnalysis>;
+  // Thin composition of the two methods above, uncached -- kept for
+  // RecruiterSearchService's "best fit" ranking, which evaluates a
+  // search query against many different candidates' profiles in one
+  // batch (not a resume regenerated repeatedly against a fixed JD), so
+  // the keyword-list caching ResumeGenerationsService does doesn't apply
+  // here the same way. Preserves the original analyzeMatch behavior
+  // exactly for that one remaining caller.
+  async analyzeMatch(params: { jobDescription: string; resumeContent: string }): Promise<MatchAnalysis> {
+    const keywords = await this.extractJobKeywords(params.jobDescription);
+    const { fitScore, matchedKeywords } = await this.classifyKeywordMatches({
+      jobDescription: params.jobDescription,
+      keywords,
+      resumeContent: params.resumeContent,
+    });
     return {
-      fitScore: input.fitScore ?? 0,
-      matchedKeywords: input.matchedKeywords ?? [],
-      missingKeywords: input.missingKeywords ?? [],
+      fitScore,
+      matchedKeywords,
+      missingKeywords: keywords.filter((k) => !matchedKeywords.includes(k)),
     };
   }
 

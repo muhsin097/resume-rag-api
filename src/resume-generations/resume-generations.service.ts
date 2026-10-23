@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { VectorService } from '../vector/vector.service.js';
@@ -263,10 +264,21 @@ export class ResumeGenerationsService {
     const creditReserved = await this.reserveGenerationCredit(userId, user.plan, RESCORE_COST);
 
     try {
-      const analysis = await this.claudeClient.analyzeMatch({
+      // Same cached keyword list the original generation used (and any
+      // prior rescore) -- a rescore's whole point is "did the resume
+      // change enough to now match the SAME keywords," not a fresh
+      // re-derivation of what the keywords even are.
+      const keywords = await this.getOrExtractJobKeywords(generation.jobDescription);
+      const { fitScore, matchedKeywords: modelMatched } = await this.claudeClient.classifyKeywordMatches({
         jobDescription: generation.jobDescription,
+        keywords,
         resumeContent: generation.generatedContent,
       });
+      const analysis: MatchAnalysis = {
+        fitScore,
+        matchedKeywords: modelMatched,
+        missingKeywords: keywords.filter((k) => !modelMatched.includes(k)),
+      };
       const { matchedKeywords, missingKeywords, keywordCoverage } = reconcileKeywordMatches(
         analysis,
         generation.generatedContent,
@@ -289,6 +301,34 @@ export class ResumeGenerationsService {
       }
       throw err;
     }
+  }
+
+  // Keeps the "which keywords matter" list stable across every
+  // generate/rescore against the same JD text -- extraction depends only
+  // on the posting, not the candidate, so this is a global cache, not
+  // per-user. Hashed rather than keyed by the raw text directly so the
+  // unique index stays a fixed-size column regardless of JD length.
+  // Trim-only normalization: aggressive normalization (lowercasing,
+  // whitespace-collapsing) risks silently merging two JDs a candidate
+  // considers meaningfully different; trimming just avoids two cache
+  // misses for the same posting pasted with incidental leading/trailing
+  // whitespace.
+  private async getOrExtractJobKeywords(jobDescription: string): Promise<string[]> {
+    const hash = createHash('sha256').update(jobDescription.trim()).digest('hex');
+    const cached = await this.prisma.jobKeywordCache.findUnique({ where: { jobDescriptionHash: hash } });
+    if (cached) return cached.keywords;
+
+    const keywords = await this.claudeClient.extractJobKeywords(jobDescription);
+    // Upsert, not create -- two concurrent generations against a JD
+    // nobody has pasted before could both miss the cache and both try to
+    // extract; the second write would otherwise hit the unique
+    // constraint and throw.
+    await this.prisma.jobKeywordCache.upsert({
+      where: { jobDescriptionHash: hash },
+      create: { jobDescriptionHash: hash, keywords },
+      update: {},
+    });
+    return keywords;
   }
 
   private async reserveGenerationCredit(userId: string, plan: string, amount: number): Promise<boolean> {
@@ -446,10 +486,25 @@ export class ResumeGenerationsService {
 
     const generatedContent = flattenResumeDocument(structuredContent);
 
-    const analysis = await this.claudeClient.analyzeMatch({
+    // Cached by JD text -- see getOrExtractJobKeywords. Keeps the
+    // "which keywords matter" yardstick stable across every subsequent
+    // regenerate/rescore against this same posting; only the
+    // match-against-THIS-resume classification below reruns fresh.
+    const keywords = await this.getOrExtractJobKeywords(dto.jobDescription);
+    const { fitScore, matchedKeywords: modelMatched } = await this.claudeClient.classifyKeywordMatches({
       jobDescription: dto.jobDescription,
+      keywords,
       resumeContent: generatedContent,
     });
+    // missingKeywords is always the complement of the stable keyword
+    // list, never a separately-generated model output -- guarantees it
+    // can't drift from matchedKeywords (no invented or silently-dropped
+    // keywords between the two lists).
+    const analysis: MatchAnalysis = {
+      fitScore,
+      matchedKeywords: modelMatched,
+      missingKeywords: keywords.filter((k) => !modelMatched.includes(k)),
+    };
 
     // keywordCoverage is computed here, not trusted from the model -- see
     // reconcileKeywordMatches. fitScore, by contrast, is kept as Claude's

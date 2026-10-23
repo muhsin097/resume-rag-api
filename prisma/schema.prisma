@@ -226,6 +226,27 @@ model Recruiter {
   @@map("recruiters")
 }
 
+// Caches which keywords Claude decided matter for a given job description
+// text, independent of any candidate's resume. Keeps the "yardstick"
+// stable across repeated generate/rescore calls against the SAME JD --
+// without this, every call re-derived the keyword list from scratch, and
+// Claude's judgment calls (how finely to split a compound requirement,
+// whether a phrase is "checkable" vs. just behavioral prose) could shift
+// slightly between calls even at temperature:0, so regenerating against
+// an unchanged JD could show a visibly different "missing keywords" list
+// even when the resume content hadn't meaningfully changed. Keyed by a
+// hash of the JD text, not scoped to a user -- extraction only depends
+// on the posting itself, so it's shared across every candidate who
+// pastes the same JD.
+model JobKeywordCache {
+  id                 String   @id @default(uuid())
+  jobDescriptionHash String   @unique @map("job_description_hash")
+  keywords           String[]
+  createdAt          DateTime @default(now()) @map("created_at")
+
+  @@map("job_keyword_cache")
+}
+
 model ResumeGeneration {
   id               String   @id @default(uuid())
   userId           String   @map("user_id")
