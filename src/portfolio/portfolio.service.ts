@@ -30,6 +30,8 @@ export interface PublicExperienceItem {
   startDate: Date | null;
   endDate: Date | null;
   isCurrent: boolean;
+  // Only ever true for type PROJECT -- see ExperienceItem.isHighlighted.
+  isHighlighted: boolean;
 }
 
 export interface PortfolioSkill {
@@ -157,6 +159,7 @@ function toPublicExperienceItem(item: {
   startDate: Date | null;
   endDate: Date | null;
   isCurrent: boolean;
+  isHighlighted: boolean;
 }): PublicExperienceItem {
   return {
     id: item.id,
@@ -166,6 +169,7 @@ function toPublicExperienceItem(item: {
     startDate: item.startDate,
     endDate: item.endDate,
     isCurrent: item.isCurrent,
+    isHighlighted: item.isHighlighted,
   };
 }
 

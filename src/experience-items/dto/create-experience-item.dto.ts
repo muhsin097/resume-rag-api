@@ -39,4 +39,10 @@ export class CreateExperienceItemDto {
   @IsOptional()
   @IsBoolean()
   isCurrent?: boolean;
+
+  // Only meaningful for type PROJECT. "At most one per user" is enforced
+  // in ExperienceItemsService.update, not here.
+  @IsOptional()
+  @IsBoolean()
+  isHighlighted?: boolean;
 }

@@ -1,4 +1,4 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { VectorService } from '../vector/vector.service.js';
 import { ClaudeClient } from '../llm/claude.client.js';
@@ -176,14 +176,30 @@ export class ExperienceItemsService {
   async update(userId: string, id: string, dto: UpdateExperienceItemDto) {
     const existing = await this.findOneForUser(userId, id);
 
-    const item = await this.prisma.experienceItem.update({
-      where: { id },
-      data: {
-        ...dto,
-        startDate: dto.startDate ? new Date(dto.startDate) : undefined,
-        endDate: dto.endDate ? new Date(dto.endDate) : undefined,
-        content: this.buildContent({ ...existing, ...dto }),
-      },
+    if (dto.isHighlighted === true && existing.type !== 'PROJECT') {
+      throw new BadRequestException('Only projects can be highlighted.');
+    }
+
+    const item = await this.prisma.$transaction(async (tx) => {
+      // At most one highlighted project per user -- unset any previous
+      // one in the same transaction as setting this one, so a concurrent
+      // read never briefly sees two.
+      if (dto.isHighlighted === true) {
+        await tx.experienceItem.updateMany({
+          where: { userId, type: 'PROJECT', isHighlighted: true, id: { not: id } },
+          data: { isHighlighted: false },
+        });
+      }
+
+      return tx.experienceItem.update({
+        where: { id },
+        data: {
+          ...dto,
+          startDate: dto.startDate ? new Date(dto.startDate) : undefined,
+          endDate: dto.endDate ? new Date(dto.endDate) : undefined,
+          content: this.buildContent({ ...existing, ...dto }),
+        },
+      });
     });
 
     await this.vectorService.embedExperienceItem(item.id, item.content);

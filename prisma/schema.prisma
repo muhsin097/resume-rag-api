@@ -209,6 +209,11 @@ model ExperienceItem {
   // "currently here". Only meaningful for EXPERIENCE/EDUCATION/PROJECT
   // (the date-range types); ignored for CERTIFICATION (single date).
   isCurrent    Boolean          @default(false) @map("is_current")
+  // Only meaningful for type PROJECT -- the one project a candidate has
+  // chosen to feature prominently on their public portfolio page.
+  // Enforced to be at most one per user at the service layer (see
+  // ExperienceItemsService.update), not a DB constraint.
+  isHighlighted Boolean         @default(false) @map("is_highlighted")
   // Normalized text actually sent to the embedding model -- derived from the fields above.
   content      String           @db.Text
   createdAt    DateTime         @default(now()) @map("created_at")
