@@ -28,4 +28,12 @@ export class UsersController {
     await this.usersService.deleteAccount(user.id);
     return { message: 'Account deleted.' };
   }
+
+  // Deliberately NOT under /portfolio/:slug/... (PortfolioController is
+  // fully public/unauthenticated) -- a static "me" segment there would
+  // collide with the public :slug param route.
+  @Get('me/portfolio-leads')
+  getPortfolioLeads(@CurrentUser() user: AuthenticatedUser) {
+    return this.usersService.getPortfolioLeads(user.id);
+  }
 }

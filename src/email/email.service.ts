@@ -46,12 +46,13 @@ export class EmailService {
   // left no trace anywhere: no thrown error, nothing in our logs, just an
   // email that never left Resend. Throwing here is what makes the
   // existing try/catch + Logger.error at the call sites actually work.
-  private async send(params: { to: string; subject: string; html: string }): Promise<void> {
+  private async send(params: { to: string; subject: string; html: string; replyTo?: string }): Promise<void> {
     const sendPromise = this.getClient().emails.send({
       from: this.fromAddress,
       to: params.to,
       subject: params.subject,
       html: params.html,
+      ...(params.replyTo ? { replyTo: params.replyTo } : {}),
     });
     let timeoutHandle: NodeJS.Timeout;
     const timeoutPromise = new Promise<never>((_, reject) => {
@@ -94,6 +95,34 @@ export class EmailService {
         <p style="font-size: 28px; font-weight: 700; letter-spacing: 4px;">${code}</p>
         <p>If you didn't request this, you can safely ignore this email.</p>
       `,
+    });
+  }
+
+  // params.visitorEmail/visitorName/message are all attacker-controlled
+  // (anyone can submit the public lead form) -- HTML-escaped before
+  // interpolation so this can't be used to inject markup into an email
+  // the recipient's client renders.
+  async sendPortfolioLeadNotification(
+    to: string,
+    params: { visitorEmail: string; visitorName?: string | null; message?: string | null },
+  ): Promise<void> {
+    const escape = (s: string) =>
+      s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    const who = params.visitorName
+      ? `${escape(params.visitorName)} (${escape(params.visitorEmail)})`
+      : escape(params.visitorEmail);
+    await this.send({
+      to,
+      subject: 'Someone is interested in discussing an opportunity with you',
+      html: `
+        <p>${who} viewed your public portfolio and would like to connect.</p>
+        ${params.message ? `<p style="white-space: pre-wrap;">${escape(params.message)}</p>` : ''}
+        <p>Just reply to this email to reach them directly.</p>
+      `,
+      // Makes "reply to this email" literally true -- the send itself is
+      // still from noreply@, but a reply routes to the visitor, not into
+      // the void.
+      replyTo: params.visitorEmail,
     });
   }
 }

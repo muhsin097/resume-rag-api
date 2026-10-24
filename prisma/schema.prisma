@@ -64,6 +64,14 @@ model User {
   githubUrl           String?            @map("github_url")
   websiteUrl          String?            @map("website_url")
   jobSearchEnabled    Boolean            @default(true) @map("job_search_enabled")
+  // Deliberately separate from jobSearchEnabled -- a public portfolio and
+  // "actively looking" are different intents a candidate might want
+  // independently. Null until the first time they enable the portfolio;
+  // unique so /p/<slug> can look it up directly. Editable afterward (like
+  // a username) -- a link built on the old slug simply 404s once changed,
+  // no redirect kept.
+  portfolioSlug       String?            @unique @map("portfolio_slug")
+  portfolioEnabled    Boolean            @default(false) @map("portfolio_enabled")
   // PREMIUM is now a legacy/admin-only grandfather flag (manually set,
   // never purchasable) that bypasses the credit balance entirely --
   // unlimited generations, same as before this moved to prepaid packs.
@@ -110,6 +118,7 @@ model User {
   experienceItems     ExperienceItem[]
   resumeGenerations   ResumeGeneration[]
   creditPurchases     CreditPurchase[]
+  portfolioLeads      PortfolioLead[]
 
   @@map("users")
 }
@@ -121,6 +130,25 @@ model User {
 // moves a row to PAID and credits the account -- the client-side checkout
 // success callback is UX feedback only, never trusted to grant credits
 // itself, since a client redirect can be spoofed without ever paying.
+// One row per "interested" submission on a public portfolio page -- the
+// VISITOR'S contact info (whoever clicked the button), not the portfolio
+// owner's. Fully public, unauthenticated endpoint (anyone viewing a
+// shared link can submit), so dedupe + rate limiting live in
+// PortfolioService, not here; this table has no uniqueness constraint of
+// its own beyond the primary key.
+model PortfolioLead {
+  id           String   @id @default(uuid())
+  userId       String   @map("user_id")
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  visitorEmail String   @map("visitor_email")
+  visitorName  String?  @map("visitor_name")
+  message      String?  @db.Text
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@map("portfolio_leads")
+  @@index([userId])
+}
+
 model CreditPurchase {
   id                String         @id @default(uuid())
   userId            String         @map("user_id")

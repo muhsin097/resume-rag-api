@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { ConflictException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { UpdateUserDto } from './dto/update-user.dto.js';
 
@@ -13,6 +13,8 @@ const PROFILE_SELECT = {
   githubUrl: true,
   websiteUrl: true,
   jobSearchEnabled: true,
+  portfolioEnabled: true,
+  portfolioSlug: true,
   plan: true,
   freeGenerationsUsed: true,
   creditsBalance: true,
@@ -45,12 +47,33 @@ export class UsersService {
   }
 
   async update(id: string, dto: UpdateUserDto) {
+    // Pre-checked explicitly (same pattern as elsewhere in this codebase,
+    // e.g. AuthService.register) rather than catching the raw Prisma
+    // unique-constraint error -- a clearer, friendlier message than a
+    // generic 500 or a leaked DB error shape.
+    if (dto.portfolioSlug) {
+      const existing = await this.prisma.user.findUnique({
+        where: { portfolioSlug: dto.portfolioSlug },
+        select: { id: true },
+      });
+      if (existing && existing.id !== id) {
+        throw new ConflictException('That portfolio URL is already taken.');
+      }
+    }
+
     const user = await this.prisma.user.update({
       where: { id },
       data: dto,
       select: PROFILE_SELECT,
     });
     return withEffectiveCredits(user);
+  }
+
+  getPortfolioLeads(userId: string) {
+    return this.prisma.portfolioLead.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+    });
   }
 
   // Soft delete, not a row removal -- email and freeGenerationsUsed are
@@ -64,6 +87,7 @@ export class UsersService {
     await this.prisma.$transaction([
       this.prisma.experienceItem.deleteMany({ where: { userId: id } }),
       this.prisma.resumeGeneration.deleteMany({ where: { userId: id } }),
+      this.prisma.portfolioLead.deleteMany({ where: { userId: id } }),
       this.prisma.user.update({
         where: { id },
         data: {
@@ -79,6 +103,11 @@ export class UsersService {
           passwordResetExpiresAt: null,
           emailVerificationCodeHash: null,
           emailVerificationExpiresAt: null,
+          // Stops the public page from resolving and frees the slug for
+          // someone else to claim -- a deleted account shouldn't keep a
+          // reachable public page or permanently squat a URL.
+          portfolioEnabled: false,
+          portfolioSlug: null,
           deletedAt: new Date(),
         },
       }),

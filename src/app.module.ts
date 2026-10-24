@@ -14,6 +14,7 @@ import { RecruiterAuthModule } from './recruiter-auth/recruiter-auth.module.js';
 import { RecruiterSearchModule } from './recruiter-search/recruiter-search.module.js';
 import { ResumeExportModule } from './resume-export/resume-export.module.js';
 import { PaymentsModule } from './payments/payments.module.js';
+import { PortfolioModule } from './portfolio/portfolio.module.js';
 
 @Module({
   imports: [
@@ -31,6 +32,7 @@ import { PaymentsModule } from './payments/payments.module.js';
     RecruiterSearchModule,
     ResumeExportModule,
     PaymentsModule,
+    PortfolioModule,
   ],
   providers: [{ provide: APP_FILTER, useClass: SentryGlobalFilter }],
 })
