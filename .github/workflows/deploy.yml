@@ -6,7 +6,43 @@ on:
   workflow_dispatch: {}
 
 jobs:
+  # Gates build/deploy on the test suite actually passing -- previously
+  # nothing ran `npm test` at all in CI, so a broken payment/credit-
+  # reservation change could ship undetected. pgvector/pgvector:pg16
+  # (same image docker-compose.yml uses for local dev) rather than plain
+  # postgres, since the very first migration does `CREATE EXTENSION
+  # vector` and a vanilla Postgres image doesn't have that extension's
+  # files installed.
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: resumerag
+          POSTGRES_PASSWORD: resumerag
+          POSTGRES_DB: resumerag
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://resumerag:resumerag@localhost:5432/resumerag?schema=public
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: npm ci
+      - run: npx prisma migrate deploy
+      - run: npx prisma generate
+      - run: npm test
+
   build:
+    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: read
