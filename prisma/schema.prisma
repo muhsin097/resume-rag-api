@@ -113,6 +113,14 @@ model User {
   // Gates access to the separate admin dashboard app -- not exposed via any
   // user-facing update endpoint, only ever flipped by hand in the DB.
   isAdmin             Boolean            @default(false) @map("is_admin")
+  // Embedded in every JWT at sign time and checked against this live
+  // column in JwtStrategy.validate() -- lets a password reset invalidate
+  // every token issued before it, rather than a leaked/stolen token
+  // staying valid for its full 7-day life even after the password (the
+  // thing presumably being reset BECAUSE it leaked) changes. Bumped only
+  // by resetPassword(); a normal login/oauth/verify-email doesn't touch
+  // it, so signing in on a second device doesn't invalidate the first.
+  tokenVersion        Int                @default(0) @map("token_version")
   createdAt           DateTime           @default(now()) @map("created_at")
   // Soft delete, not a real row removal -- email, freeGenerationsUsed, and
   // creditsBalance/creditsExpireAt are deliberately kept so delete-then-

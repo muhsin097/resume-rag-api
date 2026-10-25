@@ -213,7 +213,14 @@ export class AuthService {
     const passwordHash = await bcrypt.hash(newPassword, PASSWORD_HASH_ROUNDS);
     await this.prisma.user.update({
       where: { id: user.id },
-      data: { passwordHash, passwordResetTokenHash: null, passwordResetExpiresAt: null },
+      data: {
+        passwordHash,
+        passwordResetTokenHash: null,
+        passwordResetExpiresAt: null,
+        // Invalidates every token issued before this reset -- see the
+        // tokenVersion comment on the User model for why.
+        tokenVersion: { increment: 1 },
+      },
     });
   }
 
@@ -302,11 +309,13 @@ export class AuthService {
     email: string;
     name: string;
     isAdmin: boolean;
+    tokenVersion: number;
   }) {
     const accessToken = this.jwtService.sign({
       sub: user.id,
       email: user.email,
       isAdmin: user.isAdmin,
+      tokenVersion: user.tokenVersion,
       kind: 'candidate',
     });
 
