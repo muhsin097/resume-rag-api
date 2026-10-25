@@ -36,3 +36,25 @@ export async function createTestUser(
     },
   });
 }
+
+export async function createTestRecruiter(
+  prisma: PrismaService,
+  overrides: Partial<{ emailVerifiedAt: Date | null }> = {},
+) {
+  return prisma.recruiter.create({
+    data: {
+      email: `test-recruiter-${randomUUID()}@example.invalid`,
+      name: 'Test Recruiter',
+      companyName: 'Test Co',
+      emailVerifiedAt: overrides.emailVerifiedAt ?? new Date(),
+    },
+  });
+}
+
+// A no-op stand-in for EmailService in tests that exercise OTP flows but
+// don't care about actual delivery -- real send failures are already
+// swallowed-and-logged at every call site, so this just skips that
+// logging noise rather than changing test behavior.
+export function createFakeEmailService() {
+  return { sendVerificationEmail: async () => {} };
+}

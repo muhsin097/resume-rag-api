@@ -19,6 +19,13 @@ import { verifyGoogleIdToken } from './google-id-token.js';
 const PASSWORD_HASH_ROUNDS = 10;
 const PASSWORD_RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
 const VERIFICATION_CODE_TTL_MS = 10 * 60 * 1000;
+// A 6-digit code has 1M combinations -- without a cap, an attacker could
+// grind through enough of that space within the 10-minute TTL to land a
+// hit. This bounds the attempts against any single issued code; hitting
+// it invalidates the code outright rather than just resetting a counter,
+// so grinding must restart from a fresh code (and a fresh TTL window)
+// every time.
+const OTP_MAX_ATTEMPTS = 5;
 
 function hashCode(code: string): string {
   return createHash('sha256').update(code).digest('hex');
@@ -88,6 +95,7 @@ export class AuthService {
       data: {
         emailVerificationCodeHash: hashCode(code),
         emailVerificationExpiresAt: new Date(Date.now() + VERIFICATION_CODE_TTL_MS),
+        emailVerificationAttempts: 0,
       },
     });
     try {
@@ -129,10 +137,11 @@ export class AuthService {
     return this.buildAuthResponse(user);
   }
 
-  // Called from resume-rag-web's NextAuth jwt callback after Google has
-  // already verified the email -- never reachable from outside the compose
-  // network (api has no public port), so there's no path for an outside
-  // caller to assert an arbitrary email here.
+  // Called from resume-rag-web's NextAuth jwt callback. Verifies Google's
+  // own ID token server-side and uses ONLY the verified payload's
+  // email/name -- see google-id-token.ts for why the old {email, name}
+  // shape (no proof at all) was exploitable despite Caddy fronting this
+  // publicly.
   async oauthLogin(idToken: string) {
     // The actual fix: the email/name used below come from Google's own
     // verified token payload, never from client-supplied fields -- see
@@ -219,9 +228,34 @@ export class AuthService {
       !user ||
       !user.emailVerificationCodeHash ||
       !user.emailVerificationExpiresAt ||
-      user.emailVerificationExpiresAt < new Date() ||
-      user.emailVerificationCodeHash !== hashCode(code)
+      user.emailVerificationExpiresAt < new Date()
     ) {
+      throw new BadRequestException('That code is incorrect or has expired.');
+    }
+
+    if (user.emailVerificationCodeHash !== hashCode(code)) {
+      // Invalidate the code outright once the attempt cap is hit, rather
+      // than just leaving the counter maxed -- otherwise the same code
+      // (and its still-live TTL) could be retried forever at a 1-per-call
+      // granularity. The caller has to hit resend-verification to get a
+      // new code, which also resets this counter.
+      if (user.emailVerificationAttempts + 1 >= OTP_MAX_ATTEMPTS) {
+        await this.prisma.user.update({
+          where: { id: user.id },
+          data: {
+            emailVerificationCodeHash: null,
+            emailVerificationExpiresAt: null,
+            emailVerificationAttempts: 0,
+          },
+        });
+        throw new BadRequestException(
+          'Too many incorrect attempts. Request a new code and try again.',
+        );
+      }
+      await this.prisma.user.update({
+        where: { id: user.id },
+        data: { emailVerificationAttempts: { increment: 1 } },
+      });
       throw new BadRequestException('That code is incorrect or has expired.');
     }
 
@@ -231,6 +265,7 @@ export class AuthService {
         emailVerifiedAt: new Date(),
         emailVerificationCodeHash: null,
         emailVerificationExpiresAt: null,
+        emailVerificationAttempts: 0,
       },
     });
 
@@ -251,6 +286,7 @@ export class AuthService {
       data: {
         emailVerificationCodeHash: hashCode(code),
         emailVerificationExpiresAt: new Date(Date.now() + VERIFICATION_CODE_TTL_MS),
+        emailVerificationAttempts: 0,
       },
     });
 

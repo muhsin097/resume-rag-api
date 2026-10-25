@@ -56,6 +56,12 @@ model User {
   emailVerifiedAt     DateTime?          @map("email_verified_at")
   emailVerificationCodeHash String?      @map("email_verification_code_hash")
   emailVerificationExpiresAt DateTime?   @map("email_verification_expires_at")
+  // Failed verifyEmail() attempts against the current code -- reset to 0
+  // whenever a fresh code is issued (register/resend), and the code
+  // itself is invalidated once this hits OTP_MAX_ATTEMPTS, forcing a
+  // resend rather than letting a 6-digit code (1M combinations) be
+  // brute-forced within its 10-minute TTL.
+  emailVerificationAttempts Int          @default(0) @map("email_verification_attempts")
   name                String
   phone               String?
   location            String?
@@ -251,6 +257,16 @@ model Recruiter {
   passwordHash       String?  @map("password_hash")
   name               String
   companyName        String?  @map("company_name")
+  // Same OTP-verification shape as User -- previously register() issued a
+  // real access token immediately with zero proof of mailbox ownership,
+  // so anyone could register as "recruiter@victim-company.com" and start
+  // emailing/searching candidates under that identity. Null means
+  // unverified (set immediately for Google OAuth, same as User); login()
+  // and register() are both blocked on this the same way.
+  emailVerifiedAt            DateTime? @map("email_verified_at")
+  emailVerificationCodeHash  String?   @map("email_verification_code_hash")
+  emailVerificationExpiresAt DateTime? @map("email_verification_expires_at")
+  emailVerificationAttempts  Int       @default(0) @map("email_verification_attempts")
   // Spends against RECRUITER_FREE_CREDITS_LIMIT -- gates the LLM-ranked
   // "best 3 fits" search, not the free cosine-based search itself.
   rankingCreditsUsed Int      @default(0) @map("ranking_credits_used")
