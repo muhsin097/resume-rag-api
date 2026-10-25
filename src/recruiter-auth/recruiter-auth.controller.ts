@@ -20,6 +20,6 @@ export class RecruiterAuthController {
 
   @Post('oauth')
   oauthLogin(@Body() dto: OAuthLoginDto) {
-    return this.recruiterAuthService.oauthLogin(dto.email, dto.name);
+    return this.recruiterAuthService.oauthLogin(dto.idToken);
   }
 }

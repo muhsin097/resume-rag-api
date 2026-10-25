@@ -24,7 +24,7 @@ export class AuthController {
 
   @Post('oauth')
   oauthLogin(@Body() dto: OAuthLoginDto) {
-    return this.authService.oauthLogin(dto.email, dto.name);
+    return this.authService.oauthLogin(dto.idToken);
   }
 
   @Post('forgot-password')

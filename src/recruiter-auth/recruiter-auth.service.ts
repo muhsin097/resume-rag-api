@@ -8,6 +8,7 @@ import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { RegisterRecruiterDto } from './dto/register-recruiter.dto.js';
 import { LoginRecruiterDto } from './dto/login-recruiter.dto.js';
+import { verifyGoogleIdToken } from '../auth/google-id-token.js';
 
 const PASSWORD_HASH_ROUNDS = 10;
 
@@ -63,14 +64,21 @@ export class RecruiterAuthService {
 
   // Called from resume-rag-web's NextAuth jwt callback after Google has
   // already verified the email -- same trust boundary as AuthService's
-  // oauthLogin (api has no public port, only reachable from resume-rag-web
-  // over the compose network).
-  async oauthLogin(email: string, name: string) {
-    const normalizedEmail = email.toLowerCase();
+  // The stale assumption this comment used to make ("api has no public
+  // port, only reachable from resume-rag-web over the compose network")
+  // was never actually true once Caddy started proxying the whole API
+  // unrestricted -- this endpoint was reachable directly, and a plain
+  // POST with any existing recruiter's email returned a valid token, no
+  // Google involvement at all. Now verifies Google's own ID token
+  // server-side and uses ONLY the verified payload's email/name -- see
+  // google-id-token.ts.
+  async oauthLogin(idToken: string) {
+    const identity = await verifyGoogleIdToken(idToken);
+    const normalizedEmail = identity.email.toLowerCase();
     const recruiter = await this.prisma.recruiter.upsert({
       where: { email: normalizedEmail },
       update: {},
-      create: { email: normalizedEmail, name },
+      create: { email: normalizedEmail, name: identity.name },
     });
 
     return this.buildAuthResponse(recruiter);

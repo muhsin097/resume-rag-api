@@ -48,6 +48,10 @@ services:
       RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET}
       SENTRY_DSN: ${SENTRY_DSN}
       SENTRY_ENVIRONMENT: production
+      # Audience for verifying Google ID tokens server-side (see
+      # src/auth/google-id-token.ts) -- same OAuth client resume-rag-web's
+      # NextAuth config uses, since it's the token issued to that app.
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
     depends_on:
       - postgres
 

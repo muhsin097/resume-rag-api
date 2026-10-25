@@ -14,6 +14,7 @@ import { PrismaService } from '../prisma/prisma.service.js';
 import { EmailService } from '../email/email.service.js';
 import { RegisterDto } from './dto/register.dto.js';
 import { LoginDto } from './dto/login.dto.js';
+import { verifyGoogleIdToken } from './google-id-token.js';
 
 const PASSWORD_HASH_ROUNDS = 10;
 const PASSWORD_RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
@@ -132,8 +133,12 @@ export class AuthService {
   // already verified the email -- never reachable from outside the compose
   // network (api has no public port), so there's no path for an outside
   // caller to assert an arbitrary email here.
-  async oauthLogin(email: string, name: string) {
-    const normalizedEmail = email.toLowerCase();
+  async oauthLogin(idToken: string) {
+    // The actual fix: the email/name used below come from Google's own
+    // verified token payload, never from client-supplied fields -- see
+    // google-id-token.ts for why that distinction is the whole point.
+    const identity = await verifyGoogleIdToken(idToken);
+    const normalizedEmail = identity.email.toLowerCase();
     // Google already proved this email, so it counts as verified here too
     // -- set on both branches: `create` for a brand new account, `update`
     // so a password account that never finished its own OTP flow still
@@ -144,7 +149,7 @@ export class AuthService {
     const user = await this.prisma.user.upsert({
       where: { email: normalizedEmail },
       update: { emailVerifiedAt: new Date(), deletedAt: null },
-      create: { email: normalizedEmail, name, emailVerifiedAt: new Date() },
+      create: { email: normalizedEmail, name: identity.name, emailVerifiedAt: new Date() },
     });
 
     return this.buildAuthResponse(user);
