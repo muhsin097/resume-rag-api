@@ -46,5 +46,39 @@ jobs:
             cd ~/resume-rag-api
             git pull
             cd deploy
+
+            # 2026-10-24 outage: the box's disk filled up from accumulated
+            # image layers/build cache across many deploys, `docker compose
+            # pull` degraded silently, and the container kept running a
+            # 16-hour-old image for most of a day while this workflow kept
+            # reporting success. Guard against a repeat: proactively reclaim
+            # space up front, and refuse to deploy (failing this job loudly)
+            # if there still isn't enough room, rather than attempting a
+            # cramped pull and hoping for the best.
+            MIN_FREE_KB=2097152 # 2GB
+            FREE_KB=$(df --output=avail / | tail -1 | tr -d ' ')
+            if [ "$FREE_KB" -lt "$MIN_FREE_KB" ]; then
+              echo "Low disk space ($((FREE_KB / 1024))MB free) -- pruning old Docker images/cache before deploying."
+              docker image prune -af --filter 'until=24h' || true
+              docker builder prune -af || true
+              FREE_KB=$(df --output=avail / | tail -1 | tr -d ' ')
+            fi
+            if [ "$FREE_KB" -lt "$MIN_FREE_KB" ]; then
+              echo "::error::Only $((FREE_KB / 1024))MB free after pruning -- refusing to deploy. Free up disk space on the box manually."
+              exit 1
+            fi
+
             docker compose pull api
             docker compose up -d
+
+            # Verify the running container actually picked up the freshly
+            # pulled image, rather than trusting `up -d`'s own exit code --
+            # this is the specific check that would have caught the outage
+            # above (pull degraded, container silently kept running stale).
+            RUNNING_IMAGE=$(docker compose ps -q api | xargs docker inspect -f '{{.Image}}')
+            PULLED_IMAGE=$(docker image inspect ghcr.io/muhsin097/resume-rag-api:latest -f '{{.Id}}')
+            if [ "$RUNNING_IMAGE" != "$PULLED_IMAGE" ]; then
+              echo "::error::Running container's image does not match the freshly pulled image -- deploy did not take effect."
+              exit 1
+            fi
+            echo "Deploy verified: running container matches the freshly pulled image."
