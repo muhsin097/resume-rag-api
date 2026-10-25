@@ -71,14 +71,26 @@ jobs:
             docker compose pull api
             docker compose up -d
 
-            # Verify the running container actually picked up the freshly
-            # pulled image, rather than trusting `up -d`'s own exit code --
-            # this is the specific check that would have caught the outage
-            # above (pull degraded, container silently kept running stale).
-            RUNNING_IMAGE=$(docker compose ps -q api | xargs docker inspect -f '{{.Image}}')
-            PULLED_IMAGE=$(docker image inspect ghcr.io/muhsin097/resume-rag-api:latest -f '{{.Id}}')
-            if [ "$RUNNING_IMAGE" != "$PULLED_IMAGE" ]; then
-              echo "::error::Running container's image does not match the freshly pulled image -- deploy did not take effect."
+            # Verify the live service actually responds post-deploy, rather
+            # than trusting `up -d`'s own exit code -- the api container
+            # isn't on a published host port (only reachable through caddy),
+            # so this hits the real public endpoint, same as healthcheck.yml.
+            # (An earlier version of this check compared local image IDs
+            # instead; that produced a false positive on a no-op deploy --
+            # multi-arch manifest IDs don't compare cleanly, and compose
+            # correctly left an unchanged container running rather than a
+            # bug -- so it's a live HTTP check instead.)
+            DEPLOY_OK=
+            for i in 1 2 3 4 5; do
+              if curl -fsS --max-time 10 "https://api.ceasetoresume.online/health" > /dev/null; then
+                DEPLOY_OK=1
+                break
+              fi
+              echo "Health check attempt $i failed, retrying in 5s..."
+              sleep 5
+            done
+            if [ -z "$DEPLOY_OK" ]; then
+              echo "::error::API did not respond to /health after deploy -- check logs on the box."
               exit 1
             fi
-            echo "Deploy verified: running container matches the freshly pulled image."
+            echo "Deploy verified: /health responded after deploy."
