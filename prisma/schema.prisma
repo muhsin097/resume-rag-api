@@ -332,6 +332,15 @@ model ResumeGeneration {
   keywordCoverage  Int      @default(0) @map("keyword_coverage")
   matchedKeywords  String[] @default([]) @map("matched_keywords")
   missingKeywords  String[] @default([]) @map("missing_keywords")
+  // "Resume-only" skills added via addSkillsToGeneration (saveToProfile:
+  // false) -- these never become ExperienceItem rows, so unlike
+  // profile-saved skills there's nowhere else they'd persist. Used to be
+  // a request-scoped local variable, silently lost on every call after
+  // the first: adding "Docker" in a second call rebuilt the Skills
+  // section from profile skills + ONLY "Docker", dropping whatever
+  // resume-only skill a prior call had added. Now accumulated here and
+  // merged (not replaced) on every call.
+  extraSkillTitles String[] @default([]) @map("extra_skill_titles")
   createdAt        DateTime @default(now()) @map("created_at")
 
   @@map("resume_generations")

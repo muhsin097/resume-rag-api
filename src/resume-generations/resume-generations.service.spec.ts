@@ -4,8 +4,32 @@ import {
   reconcileKeywordMatches,
   compareFactsByStartDateDesc,
   resolveFactItems,
+  mergeExtraSkillTitles,
 } from './resume-generations.service.js';
 import type { ExperienceFact, MatchAnalysis } from '../llm/claude.client.js';
+
+describe('mergeExtraSkillTitles', () => {
+  it('accumulates across calls instead of replacing the previous list', () => {
+    // This is the exact bug: a second addSkillsToGeneration call used to
+    // rebuild the Skills section from profile skills + ONLY this call's
+    // new resume-only titles, silently dropping whatever a prior call
+    // had added since that list was never persisted anywhere.
+    const afterFirstCall = mergeExtraSkillTitles([], ['Kubernetes']);
+    expect(afterFirstCall).toEqual(['Kubernetes']);
+
+    const afterSecondCall = mergeExtraSkillTitles(afterFirstCall, ['Docker']);
+    expect(afterSecondCall).toEqual(['Kubernetes', 'Docker']);
+  });
+
+  it('dedupes case-insensitively against the existing list', () => {
+    const result = mergeExtraSkillTitles(['Kubernetes'], ['kubernetes', 'Docker']);
+    expect(result).toEqual(['Kubernetes', 'Docker']);
+  });
+
+  it('returns the existing list unchanged when nothing new is added', () => {
+    expect(mergeExtraSkillTitles(['Kubernetes'], [])).toEqual(['Kubernetes']);
+  });
+});
 
 describe('keywordAppearsInResume', () => {
   it('matches an exact substring', () => {

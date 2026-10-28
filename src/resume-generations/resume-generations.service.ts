@@ -79,6 +79,24 @@ export function keywordAppearsInResume(keyword: string, resumeText: string): boo
   return new RegExp(`\\b${pattern}\\b`, 'i').test(resumeText);
 }
 
+// Standalone, pure, directly unit-testable -- see the extraSkillTitles
+// comment on the ResumeGeneration model for the bug this replaced
+// (a request-scoped local variable that silently dropped every
+// resume-only skill added before the most recent call). Case-insensitive
+// dedupe against `existing`, matching the normalization profile-saved
+// skills already get via ExperienceItemsService.createMany's duplicate
+// check.
+export function mergeExtraSkillTitles(existing: string[], incoming: string[]): string[] {
+  const seenLower = new Set(existing.map((title) => title.toLowerCase()));
+  const merged = [...existing];
+  for (const title of incoming) {
+    if (seenLower.has(title.toLowerCase())) continue;
+    seenLower.add(title.toLowerCase());
+    merged.push(title);
+  }
+  return merged;
+}
+
 // Shared by a fresh generation and a standalone rescore -- reconciles
 // Claude's matched/missing lists against the actual resume text (the
 // keywordAppearsInResume safety net), then derives keywordCoverage
@@ -305,16 +323,21 @@ export class ResumeGenerationsService {
     }
 
     const toSave: string[] = [];
-    const extraSkillTitles: string[] = [];
+    const newExtraSkillTitles: string[] = [];
     for (const entry of dto.skills) {
       const title = entry.keyword.trim();
       if (!title) continue;
       if (entry.saveToProfile) {
         toSave.push(title);
       } else {
-        extraSkillTitles.push(title);
+        newExtraSkillTitles.push(title);
       }
     }
+
+    // Merged with whatever a PRIOR call already persisted here, not
+    // replaced -- see mergeExtraSkillTitles and the extraSkillTitles
+    // comment on the ResumeGeneration model.
+    const extraSkillTitles = mergeExtraSkillTitles(generation.extraSkillTitles, newExtraSkillTitles);
 
     if (toSave.length > 0) {
       // createMany silently skips anything already in the profile
@@ -351,7 +374,11 @@ export class ResumeGenerationsService {
 
     return this.prisma.resumeGeneration.update({
       where: { id: generationId },
-      data: { structuredContent: updatedDoc as object, generatedContent: updatedContent },
+      data: {
+        structuredContent: updatedDoc as object,
+        generatedContent: updatedContent,
+        extraSkillTitles,
+      },
     });
   }
 
