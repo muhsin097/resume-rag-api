@@ -48,23 +48,34 @@ export class ExperienceItemsService {
       );
     }
 
-    const item = await this.prisma.experienceItem.create({
-      data: {
-        userId,
-        type: dto.type,
-        title: dto.title,
-        organization: dto.organization,
-        description: dto.description,
-        startDate: dto.startDate ? new Date(dto.startDate) : undefined,
-        endDate: dto.endDate ? new Date(dto.endDate) : undefined,
-        startDatePrecision: dto.startDatePrecision,
-        endDatePrecision: dto.endDatePrecision,
-        isCurrent: dto.isCurrent ?? false,
-        content: this.buildContent(dto),
-      },
+    const content = this.buildContent(dto);
+    // Embedded BEFORE anything is written -- if Voyage fails (rate
+    // limit, network blip, outage), this throws here and NOTHING is
+    // created, so a retry just works normally instead of hitting
+    // findDuplicate's ConflictException against an orphaned row with no
+    // embedding and no way to repair it. See VectorService.prepareEmbedding.
+    const embedding = await this.vectorService.prepareEmbedding(content);
+
+    const item = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.experienceItem.create({
+        data: {
+          userId,
+          type: dto.type,
+          title: dto.title,
+          organization: dto.organization,
+          description: dto.description,
+          startDate: dto.startDate ? new Date(dto.startDate) : undefined,
+          endDate: dto.endDate ? new Date(dto.endDate) : undefined,
+          startDatePrecision: dto.startDatePrecision,
+          endDatePrecision: dto.endDatePrecision,
+          isCurrent: dto.isCurrent ?? false,
+          content,
+        },
+      });
+      await this.vectorService.persistEmbedding(tx, created.id, embedding);
+      return created;
     });
 
-    await this.vectorService.embedExperienceItem(item.id, item.content);
     if (item.type === 'SKILL') {
       await this.categorizeAndPersist([item]);
     }
@@ -92,35 +103,51 @@ export class ExperienceItemsService {
       ),
     );
 
-    const items = [];
+    const toCreate: { dto: CreateExperienceItemDto; content: string }[] = [];
     for (const dto of dtos) {
       const key = [dto.type, normalize(dto.title), normalize(dto.organization)].join(' ');
       if (seen.has(key)) continue;
       seen.add(key);
-
-      const item = await this.prisma.experienceItem.create({
-        data: {
-          userId,
-          type: dto.type,
-          title: dto.title,
-          organization: dto.organization,
-          description: dto.description,
-          startDate: dto.startDate ? new Date(dto.startDate) : undefined,
-          endDate: dto.endDate ? new Date(dto.endDate) : undefined,
-          startDatePrecision: dto.startDatePrecision,
-          endDatePrecision: dto.endDatePrecision,
-          isCurrent: dto.isCurrent ?? false,
-          content: this.buildContent(dto),
-        },
-      });
-      items.push(item);
+      toCreate.push({ dto, content: this.buildContent(dto) });
     }
 
-    if (items.length > 0) {
-      await this.vectorService.embedExperienceItems(
-        items.map((item) => ({ id: item.id, content: item.content })),
-      );
-    }
+    if (toCreate.length === 0) return [];
+
+    // Embeds the WHOLE batch before creating anything -- all-or-nothing,
+    // same reasoning as create() above. A failure here used to leave
+    // however many items had already been created (loop committed each
+    // row immediately, batch embed ran once at the end) permanently
+    // orphaned with no embedding; now either the whole batch lands with
+    // embeddings or nothing is created at all, and a retry (re-run
+    // import, re-submit the bulk add) just works.
+    const embeddings = await this.vectorService.prepareEmbeddings(
+      toCreate.map((entry) => entry.content),
+    );
+
+    const items = await this.prisma.$transaction(async (tx) => {
+      const created = [];
+      for (let i = 0; i < toCreate.length; i++) {
+        const { dto, content } = toCreate[i];
+        const item = await tx.experienceItem.create({
+          data: {
+            userId,
+            type: dto.type,
+            title: dto.title,
+            organization: dto.organization,
+            description: dto.description,
+            startDate: dto.startDate ? new Date(dto.startDate) : undefined,
+            endDate: dto.endDate ? new Date(dto.endDate) : undefined,
+            startDatePrecision: dto.startDatePrecision,
+            endDatePrecision: dto.endDatePrecision,
+            isCurrent: dto.isCurrent ?? false,
+            content,
+          },
+        });
+        await this.vectorService.persistEmbedding(tx, item.id, embeddings[i]);
+        created.push(item);
+      }
+      return created;
+    });
 
     const newSkills = items.filter((item) => item.type === 'SKILL');
     if (newSkills.length > 0) {
@@ -180,6 +207,15 @@ export class ExperienceItemsService {
       throw new BadRequestException('Only projects can be highlighted.');
     }
 
+    const content = this.buildContent({ ...existing, ...dto });
+    // Embedded BEFORE the update commits -- the old order (update
+    // content, then embed) left the OLD embedding in place, now silently
+    // mismatched with the new content, if the Voyage call failed after
+    // the content change had already landed. Failing here instead means
+    // the whole update is rejected and existing.content/its embedding
+    // stay consistent with each other.
+    const embedding = await this.vectorService.prepareEmbedding(content);
+
     const item = await this.prisma.$transaction(async (tx) => {
       // At most one highlighted project per user -- unset any previous
       // one in the same transaction as setting this one, so a concurrent
@@ -191,18 +227,19 @@ export class ExperienceItemsService {
         });
       }
 
-      return tx.experienceItem.update({
+      const updated = await tx.experienceItem.update({
         where: { id },
         data: {
           ...dto,
           startDate: dto.startDate ? new Date(dto.startDate) : undefined,
           endDate: dto.endDate ? new Date(dto.endDate) : undefined,
-          content: this.buildContent({ ...existing, ...dto }),
+          content,
         },
       });
+      await this.vectorService.persistEmbedding(tx, updated.id, embedding);
+      return updated;
     });
 
-    await this.vectorService.embedExperienceItem(item.id, item.content);
     return item;
   }
 

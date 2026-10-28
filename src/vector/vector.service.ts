@@ -2,7 +2,13 @@ import { randomUUID } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { Prisma } from '../generated/prisma/client.js';
 import { VoyageClient } from './voyage.client.js';
+
+export interface PreparedEmbedding {
+  vectorLiteral: string;
+  model: string;
+}
 
 export interface SimilarExperienceItem {
   id: string;
@@ -28,36 +34,56 @@ export class VectorService {
     private readonly configService: ConfigService,
   ) {}
 
-  async embedExperienceItem(experienceItemId: string, content: string) {
-    await this.embedExperienceItems([{ id: experienceItemId, content }]);
+  // Computes an embedding WITHOUT writing anything -- deliberately
+  // separate from persisting it. The old embedExperienceItem(s) created
+  // the ExperienceItem row first and only called Voyage afterward: if
+  // that call failed (rate limit, network blip, Voyage outage), the row
+  // was already committed with no embedding at all, invisible to every
+  // RAG-based feature (resume generation, recruiter search) with no
+  // error surfaced anywhere -- and a retry would just hit
+  // findDuplicate's ConflictException, since the "duplicate" was itself
+  // the orphan, with no path to repair it. Callers now embed FIRST and
+  // only create the row(s) if that succeeds, so a failure here leaves
+  // nothing behind to orphan -- see ExperienceItemsService.create.
+  async prepareEmbedding(content: string): Promise<PreparedEmbedding> {
+    const embedding = await this.voyageClient.embed(content);
+    return { vectorLiteral: toVectorLiteral(embedding), model: this.resolvedModel() };
   }
 
-  // Embeds a batch of items with ONE Voyage request, regardless of how many
-  // there are. This is the difference between "import a 15-item resume" or
-  // "bulk-add 10 skills" costing 1 request vs. 15 -- the latter blows
-  // straight through Voyage's free-tier 3-requests/minute cap.
-  async embedExperienceItems(
-    items: { id: string; content: string }[],
+  // Batched variant of prepareEmbedding -- ONE Voyage request for the
+  // whole set, same reasoning as the old embedExperienceItems batching
+  // (resume import, bulk skill add would otherwise blow through
+  // Voyage's free-tier 3-requests/minute cap). All-or-nothing: either
+  // every text embeds, or the whole batch throws and the caller creates
+  // nothing, rather than committing partial progress.
+  async prepareEmbeddings(contents: string[]): Promise<PreparedEmbedding[]> {
+    if (contents.length === 0) return [];
+    const embeddings = await this.voyageClient.embedMany(contents);
+    const model = this.resolvedModel();
+    return embeddings.map((embedding) => ({ vectorLiteral: toVectorLiteral(embedding), model }));
+  }
+
+  // Pure DB write, no external call -- safe to run inside the same
+  // transaction as the ExperienceItem create/update it belongs to, which
+  // is the whole point: the row and its embedding either both land or
+  // neither does. `tx` so this can run as part of a caller's own
+  // transaction rather than opening a second one.
+  async persistEmbedding(
+    tx: Prisma.TransactionClient,
+    experienceItemId: string,
+    embedding: PreparedEmbedding,
   ): Promise<void> {
-    if (items.length === 0) return;
+    const id = randomUUID();
+    await tx.$executeRaw`
+      INSERT INTO "experience_embeddings" ("id", "experience_item_id", "embedding", "model", "created_at")
+      VALUES (${id}, ${experienceItemId}, ${embedding.vectorLiteral}::vector, ${embedding.model}, now())
+      ON CONFLICT ("experience_item_id")
+      DO UPDATE SET "embedding" = EXCLUDED."embedding", "model" = EXCLUDED."model", "created_at" = now()
+    `;
+  }
 
-    const embeddings = await this.voyageClient.embedMany(
-      items.map((item) => item.content),
-    );
-    const model =
-      this.configService.get<string>('VOYAGE_EMBEDDING_MODEL') ??
-      'voyage-3-lite';
-
-    for (let i = 0; i < items.length; i++) {
-      const vectorLiteral = toVectorLiteral(embeddings[i]);
-      const id = randomUUID();
-      await this.prisma.$executeRaw`
-        INSERT INTO "experience_embeddings" ("id", "experience_item_id", "embedding", "model", "created_at")
-        VALUES (${id}, ${items[i].id}, ${vectorLiteral}::vector, ${model}, now())
-        ON CONFLICT ("experience_item_id")
-        DO UPDATE SET "embedding" = EXCLUDED."embedding", "model" = EXCLUDED."model", "created_at" = now()
-      `;
-    }
+  private resolvedModel(): string {
+    return this.configService.get<string>('VOYAGE_EMBEDDING_MODEL') ?? 'voyage-3-lite';
   }
 
   // Embeds the query text ONCE so callers that need to rank several
