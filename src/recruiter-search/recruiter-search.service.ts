@@ -1,4 +1,4 @@
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { VectorService } from '../vector/vector.service.js';
@@ -23,8 +23,40 @@ interface ProfileSource {
   experienceItems: { title: string; organization: string | null; description: string | null }[];
 }
 
+// Standalone (not a class method) for the same reason as
+// reserveGenerationCredit in resume-generations.service.ts -- direct
+// unit testability, firing real concurrent calls at a real Postgres
+// connection, without constructing the whole RecruiterSearchService
+// (Claude/Voyage clients included).
+//
+// Atomic conditional UPDATE, not a separate check-then-act (read
+// rankingCreditsUsed, decide, increment only after findBestFit's 3
+// Claude calls complete) -- that let two concurrent searches both read
+// the same stale count, both pass, and both run their full 3-candidate
+// analysis even when only one credit was actually left. The WHERE
+// clause and the increment happen in the same statement, so Postgres's
+// row lock serializes concurrent attempts: the second one re-reads the
+// just-committed count before its own WHERE is evaluated.
+export async function reserveRankingCredit(
+  prisma: PrismaService,
+  recruiterId: string,
+  limit: number,
+): Promise<void> {
+  const reserved = await prisma.recruiter.updateMany({
+    where: { id: recruiterId, rankingCreditsUsed: { lt: limit } },
+    data: { rankingCreditsUsed: { increment: 1 } },
+  });
+  if (reserved.count === 0) {
+    throw new ForbiddenException(
+      'No ranking credits remaining. Each "find best fit" search costs 1 credit.',
+    );
+  }
+}
+
 @Injectable()
 export class RecruiterSearchService {
+  private readonly logger = new Logger(RecruiterSearchService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly vectorService: VectorService,
@@ -88,53 +120,55 @@ export class RecruiterSearchService {
   // through the existing analyzeMatch LLM analysis (the exact one resume
   // generation already uses) for a real 0-100 score and keyword breakdown.
   async findBestFit(recruiterId: string, dto: SearchCandidatesDto) {
-    const recruiter = await this.prisma.recruiter.findUniqueOrThrow({
-      where: { id: recruiterId },
-    });
-    if (recruiter.rankingCreditsUsed >= this.creditsLimit()) {
-      throw new ForbiddenException(
-        'No ranking credits remaining. Each "find best fit" search costs 1 credit.',
+    // Reserved atomically BEFORE the Claude calls -- see
+    // reserveRankingCredit above for why.
+    await reserveRankingCredit(this.prisma, recruiterId, this.creditsLimit());
+
+    try {
+      const matches = await this.vectorService.findSimilarCandidates(
+        dto.query,
+        BEST_FIT_SHORTLIST_SIZE,
       );
-    }
+      const users = await this.prisma.user.findMany({
+        where: { id: { in: matches.map((match) => match.userId) } },
+        select: { ...CANDIDATE_PUBLIC_SELECT, experienceItems: { select: { title: true, organization: true, description: true } } },
+      });
+      const userMap = new Map(users.map((user) => [user.id, user]));
 
-    const matches = await this.vectorService.findSimilarCandidates(
-      dto.query,
-      BEST_FIT_SHORTLIST_SIZE,
-    );
-    const users = await this.prisma.user.findMany({
-      where: { id: { in: matches.map((match) => match.userId) } },
-      select: { ...CANDIDATE_PUBLIC_SELECT, experienceItems: { select: { title: true, organization: true, description: true } } },
-    });
-    const userMap = new Map(users.map((user) => [user.id, user]));
+      const analyzed = await Promise.all(
+        matches.map(async (match) => {
+          const user = userMap.get(match.userId);
+          if (!user) return null;
+          const analysis = await this.claudeClient.analyzeMatch({
+            jobDescription: dto.query,
+            resumeContent: this.buildProfileText(user),
+          });
+          return {
+            id: user.id,
+            name: user.name,
+            bio: user.bio,
+            location: user.location,
+            matchScore: analysis.fitScore,
+            matchedKeywords: analysis.matchedKeywords,
+            missingKeywords: analysis.missingKeywords,
+          };
+        }),
+      );
 
-    const analyzed = await Promise.all(
-      matches.map(async (match) => {
-        const user = userMap.get(match.userId);
-        if (!user) return null;
-        const analysis = await this.claudeClient.analyzeMatch({
-          jobDescription: dto.query,
-          resumeContent: this.buildProfileText(user),
+      return analyzed
+        .filter((result): result is NonNullable<typeof result> => result !== null)
+        .sort((a, b) => b.matchScore - a.matchScore);
+    } catch (err) {
+      await this.prisma.recruiter
+        .update({ where: { id: recruiterId }, data: { rankingCreditsUsed: { decrement: 1 } } })
+        .catch((refundErr) => {
+          this.logger.error(
+            `Failed to refund a reserved ranking credit for recruiter ${recruiterId} after a failed search`,
+            refundErr instanceof Error ? refundErr.stack : refundErr,
+          );
         });
-        return {
-          id: user.id,
-          name: user.name,
-          bio: user.bio,
-          location: user.location,
-          matchScore: analysis.fitScore,
-          matchedKeywords: analysis.matchedKeywords,
-          missingKeywords: analysis.missingKeywords,
-        };
-      }),
-    );
-
-    await this.prisma.recruiter.update({
-      where: { id: recruiterId },
-      data: { rankingCreditsUsed: { increment: 1 } },
-    });
-
-    return analyzed
-      .filter((result): result is NonNullable<typeof result> => result !== null)
-      .sort((a, b) => b.matchScore - a.matchScore);
+      throw err;
+    }
   }
 
   async getCandidate(id: string) {
