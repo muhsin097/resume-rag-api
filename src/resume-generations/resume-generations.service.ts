@@ -76,7 +76,21 @@ export function keywordAppearsInResume(keyword: string, resumeText: string): boo
   if (tokens.length === 0) return false;
   const escapedTokens = tokens.map((token) => token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
   const pattern = escapedTokens.join('[\\s\\-/.]*');
-  return new RegExp(`\\b${pattern}\\b`, 'i').test(resumeText);
+  // \b only matches at a transition between a word character (\w) and a
+  // non-word one -- unconditionally wrapping the pattern in \b...\b
+  // silently broke any keyword whose first or last character isn't a
+  // word character itself. "C++" ends in "+", a non-word char; followed
+  // by a space (also non-word), there's no \w/non-\w transition there at
+  // all, so \b fails to match and "C++" never matched even literal
+  // "C++" in the resume text. Same failure for "C#" (trailing "#").
+  // Each boundary is now only applied on the side whose edge character
+  // is actually a word character, where it's meaningful; the other
+  // side's own special character is distinctive enough on its own.
+  const firstChar = tokens[0][0];
+  const lastChar = tokens[tokens.length - 1].slice(-1);
+  const leadingBoundary = /\w/.test(firstChar) ? '\\b' : '';
+  const trailingBoundary = /\w/.test(lastChar) ? '\\b' : '';
+  return new RegExp(`${leadingBoundary}${pattern}${trailingBoundary}`, 'i').test(resumeText);
 }
 
 // Standalone, pure, directly unit-testable -- see the extraSkillTitles

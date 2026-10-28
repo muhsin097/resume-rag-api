@@ -57,6 +57,32 @@ describe('keywordAppearsInResume', () => {
   it('returns false for an empty keyword', () => {
     expect(keywordAppearsInResume('   ', 'anything')).toBe(false);
   });
+
+  // The actual bug: \b was applied unconditionally on both sides, but \b
+  // only matches at a word/non-word transition -- "C++" ends in a
+  // non-word char ("+"), so followed by a space (also non-word) there is
+  // no such transition, and the trailing \b failed to match even
+  // literal "C++" in the resume text.
+  it('matches "C++" even though it ends in a non-word character', () => {
+    expect(keywordAppearsInResume('C++', 'Experienced in C++ and Python')).toBe(true);
+  });
+
+  it('matches "C#" even though it ends in a non-word character', () => {
+    expect(keywordAppearsInResume('C#', 'Built services in C# and .NET')).toBe(true);
+  });
+
+  it('matches "C++" at the very end of the resume text', () => {
+    expect(keywordAppearsInResume('C++', 'Languages: Python, Java, C++')).toBe(true);
+  });
+
+  it('still rejects "C++" when genuinely absent', () => {
+    expect(keywordAppearsInResume('C++', 'Experienced in C# and Python')).toBe(false);
+  });
+
+  it('still word-boundary-protects the leading word character of a symbol-suffixed keyword', () => {
+    // "C#" must not match the "C" inside an unrelated word like "ABC#".
+    expect(keywordAppearsInResume('C#', 'Grade: ABC#1')).toBe(false);
+  });
 });
 
 describe('reconcileKeywordMatches', () => {
