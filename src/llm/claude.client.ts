@@ -345,7 +345,21 @@ export class ClaudeClient {
     const toolUseBlock = response.content.find(
       (block) => block.type === 'tool_use' && block.name === JOB_KEYWORDS_TOOL_NAME,
     );
-    if (toolUseBlock?.type !== 'tool_use') return [];
+    // Used to return [] here -- indistinguishable from a legitimate
+    // zero-keyword extraction (a real, correct result for an
+    // all-behavioral-prose JD), and getOrExtractJobKeywords upserts
+    // whatever this returns into a permanent, un-expiring cache keyed by
+    // JD hash. A transient API failure masquerading as "this JD has no
+    // keywords" got cached forever -- every future generation/rescore
+    // against that same JD silently got 0 keywords (and the
+    // keywordCoverage% that implies) with no error, ever again, even
+    // after the transient issue resolved itself. Throwing means a
+    // genuine failure never reaches the upsert at all.
+    if (toolUseBlock?.type !== 'tool_use') {
+      throw new Error(
+        `extractJobKeywords: no ${JOB_KEYWORDS_TOOL_NAME} tool-use block in Claude's response (stop_reason: ${response.stop_reason})`,
+      );
+    }
     const input = toolUseBlock.input as { keywords?: string[] };
     return input.keywords ?? [];
   }
@@ -408,8 +422,17 @@ export class ClaudeClient {
     const toolUseBlock = response.content.find(
       (block) => block.type === 'tool_use' && block.name === ANALYSIS_TOOL_NAME,
     );
+    // Used to return a fake fitScore: 0 here -- indistinguishable from a
+    // real, genuinely terrible match. That 0 got saved directly onto the
+    // ResumeGeneration row as the candidate's actual score (and the
+    // credit already reserved for the call stayed spent), so a transient
+    // API hiccup silently told a real candidate their resume was a 0%
+    // fit. Throwing routes this into the same reserveGenerationCredit
+    // catch-and-refund path generateTailoredResume's analogous fix uses.
     if (toolUseBlock?.type !== 'tool_use') {
-      return { fitScore: 0, matchedKeywords: [] };
+      throw new Error(
+        `classifyKeywordMatches: no ${ANALYSIS_TOOL_NAME} tool-use block in Claude's response (stop_reason: ${response.stop_reason})`,
+      );
     }
     const input = toolUseBlock.input as { fitScore?: number; matchedKeywords?: string[] };
     return { fitScore: input.fitScore ?? 0, matchedKeywords: input.matchedKeywords ?? [] };
